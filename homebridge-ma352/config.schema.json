@@ -1,0 +1,22 @@
+{
+  "pluginAlias": "MA352Platform",
+  "pluginType": "platform",
+  "name": "MA352 Platform",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "host": {
+        "title": "Bridge Host",
+        "type": "string",
+        "default": "127.0.0.1",
+        "description": "IP address or hostname of the MA352 bridge service"
+      },
+      "port": {
+        "title": "Bridge Port",
+        "type": "number",
+        "default": 5000,
+        "description": "HTTP port for the MA352 bridge service"
+      }
+    }
+  }
+}
