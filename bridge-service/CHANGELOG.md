@@ -6,3 +6,4 @@
 - Clamped volume values in cache, outbound commands, and inbound status parsing.
 - Added serial watchdog and /health endpoint for runtime diagnostics.
 - Added serial error tracking and stale-connection recovery.
+- Added section comments throughout app.py for clarity.

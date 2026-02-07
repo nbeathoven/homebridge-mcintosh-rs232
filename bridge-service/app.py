@@ -1,3 +1,4 @@
+# Standard library imports
 import json
 import logging
 import os
@@ -5,10 +6,12 @@ import re
 import threading
 import time
 
+# Third-party imports
 from flask import Flask, Response, jsonify, request
 import serial
 from serial import SerialException
 
+# Command definitions
 from commands import (
     HELP,
     INPUT_SET_SHORT,
@@ -26,6 +29,7 @@ from commands import (
     VOLUME_SET_ZONE,
 )
 
+# Configuration (env overrides supported)
 APP_HOST = os.getenv("BRIDGE_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
 
@@ -41,9 +45,11 @@ COMMAND_STYLE = os.getenv("COMMAND_STYLE", "auto").lower()
 DEFAULT_COMMAND_STYLE = os.getenv("DEFAULT_COMMAND_STYLE", "short").lower()
 COMMAND_ZONE = os.getenv("COMMAND_ZONE", "Z1")
 
+# Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
+# Command mode detection and selection
 class CommandMode:
     def __init__(self, mode, default_style, zone):
         self._mode = mode if mode in ("short", "zone", "auto") else "auto"
@@ -106,6 +112,7 @@ class CommandMode:
 command_mode = CommandMode(COMMAND_STYLE, DEFAULT_COMMAND_STYLE, COMMAND_ZONE)
 
 
+# Serial connection manager (I/O loop + reconnects + health info)
 class SerialManager:
     def __init__(self, port, baud, reconnect_interval, line_handler=None, on_connect=None):
         self._port = port
@@ -258,6 +265,7 @@ class SerialManager:
             }
 
 
+# Serial watchdog to force reconnect when the line is stale
 class SerialWatchdog:
     def __init__(self, manager, stale_timeout, interval):
         self._manager = manager
@@ -287,6 +295,7 @@ class SerialWatchdog:
         self._stop_event.set()
 
 
+# Hold controller for press-and-hold volume changes
 class HoldController:
     def __init__(self, send_func, get_level_func, set_level_func, interval):
         self._send = send_func
@@ -340,6 +349,7 @@ class HoldController:
             thread.join(timeout=0.3)
 
 
+# Periodic status query poller
 class QueryPoller:
     def __init__(self, send_func, interval, send_immediately=True):
         self._send = send_func
@@ -367,6 +377,7 @@ class QueryPoller:
         self._stop_event.set()
 
 
+# In-memory state cache for device status
 class StateCache:
     def __init__(self):
         self._lock = threading.Lock()
@@ -456,6 +467,7 @@ class StateCache:
                 "updated_at": self._updated_at,
             }
 
+# Buffer of recent serial messages for diagnostics
 class LineBuffer:
     def __init__(self, max_lines=200):
         self._lock = threading.Lock()
@@ -476,6 +488,7 @@ class LineBuffer:
         with self._lock:
             return list(self._lines)
 
+# Command builders (short vs zone)
 def build_power_on(style):
     return POWER_ON_SHORT if style == "short" else POWER_ON_ZONE.format(zone=command_mode.zone())
 
@@ -505,6 +518,7 @@ def build_input_set(style, value):
     return INPUT_SET_ZONE.format(zone=command_mode.zone(), value=value)
 
 
+# Send with auto-detect fallback for short/zone mode
 def send_with_fallback(short_cmd, zone_cmd):
     style = command_mode.style()
     cmd = short_cmd if style == "short" else zone_cmd
@@ -519,9 +533,11 @@ def send_with_fallback(short_cmd, zone_cmd):
             command_mode.note_fallback(fallback_style)
 
 
+# Shared singletons
 state_cache = StateCache()
 line_buffer = LineBuffer()
 
+# Serial line parsing -> update cache + detect mode
 def handle_serial_line(raw_line):
     try:
         text = raw_line.decode("ascii", errors="ignore").strip()
@@ -629,6 +645,7 @@ def handle_serial_line(raw_line):
             continue
 
 
+# Serial + polling + watchdog infrastructure
 serial_manager = SerialManager(
     SERIAL_PORT,
     SERIAL_BAUD,
@@ -638,8 +655,10 @@ serial_manager = SerialManager(
 query_poller = QueryPoller(serial_manager.write, QUERY_INTERVAL, send_immediately=QUERY_ON_CONNECT)
 serial_watchdog = SerialWatchdog(serial_manager, SERIAL_STALE_TIMEOUT, SERIAL_WATCHDOG_INTERVAL)
 
+# Flask app + HTTP routes
 app = Flask(__name__)
 
+# Helper to probe device help/firmware output
 def query_help_lines(timeout=1.0):
     line_buffer.clear()
     serial_manager.write(HELP)
@@ -662,6 +681,7 @@ def ping():
     return jsonify(ok=True)
 
 
+# Health and diagnostics
 @app.route("/health", methods=["GET"])
 def health():
     snapshot = serial_manager.health_snapshot()
@@ -687,6 +707,7 @@ def health():
     )
 
 
+# Power endpoints
 @app.route("/power/on", methods=["POST"])
 def power_on():
     try:
@@ -714,6 +735,7 @@ def power_off():
     return Response(status=204)
 
 
+# Mute endpoints
 @app.route("/mute/on", methods=["POST"])
 def mute_on():
     try:
@@ -738,6 +760,7 @@ def mute_off():
     return Response(status=204)
 
 
+# Read-only state endpoints
 @app.route("/power", methods=["GET"])
 def power_get():
     return jsonify(on=state_cache.get_power())
@@ -748,6 +771,7 @@ def mute_get():
     return jsonify(muted=state_cache.get_mute())
 
 
+# Volume endpoints
 @app.route("/volume/set", methods=["POST"])
 def volume_set():
     level = request.args.get("level")
@@ -782,6 +806,7 @@ def volume_get():
 def volume_lvl():
     return Response(str(state_cache.get_volume()), mimetype="text/plain")
 
+# Input endpoints
 @app.route("/input/set", methods=["POST"])
 def input_set():
     value = request.args.get("value")
@@ -808,6 +833,7 @@ def input_set():
 def input_get():
     return jsonify(value=state_cache.get_input())
 
+# Device help/firmware endpoints
 @app.route("/help", methods=["GET"])
 def help_get():
     try:
@@ -849,11 +875,13 @@ def firmware_get():
     return jsonify(version=None, lines=lines)
 
 
+# Aggregate state endpoint
 @app.route("/state", methods=["GET"])
 def state_get():
     return jsonify(state_cache.snapshot())
 
 
+# Hold endpoints (press-and-hold volume changes)
 hold_controller = HoldController(
     serial_manager.write,
     state_cache.get_volume,
@@ -881,6 +909,7 @@ def hold_stop():
     return Response(status=204)
 
 
+# Root endpoint
 @app.route("/", methods=["GET"])
 def root():
     return Response(
@@ -889,5 +918,6 @@ def root():
     )
 
 
+# Local dev entrypoint
 if __name__ == "__main__":
     app.run(host=APP_HOST, port=APP_PORT)
