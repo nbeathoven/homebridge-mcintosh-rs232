@@ -7,3 +7,4 @@
 - Added serial watchdog and /health endpoint for runtime diagnostics.
 - Added serial error tracking and stale-connection recovery.
 - Added section comments throughout app.py for clarity.
+- Added docstrings for functions and classes to improve readability.

@@ -51,7 +51,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 # Command mode detection and selection
 class CommandMode:
+    """Track and auto-detect whether the device expects short or zone commands."""
     def __init__(self, mode, default_style, zone):
+        """Initialize command mode configuration and detection state."""
         self._mode = mode if mode in ("short", "zone", "auto") else "auto"
         self._default_style = default_style if default_style in ("short", "zone") else "short"
         self._zone = zone
@@ -60,22 +62,27 @@ class CommandMode:
         self._last_invalid_time = 0.0
 
     def zone(self):
+        """Return the configured zone identifier."""
         return self._zone
 
     def style(self):
+        """Return the effective command style based on config/detection."""
         with self._lock:
             if self._mode != "auto":
                 return self._mode
             return self._detected or self._default_style
 
     def is_auto(self):
+        """Return True when auto-detection mode is enabled."""
         return self._mode == "auto"
 
     def is_detected(self):
+        """Return True if a command style has been detected."""
         with self._lock:
             return self._detected is not None
 
     def detect_from_parts(self, parts):
+        """Infer command style from a parsed response line."""
         if not parts:
             return
         with self._lock:
@@ -95,14 +102,17 @@ class CommandMode:
                 logging.info("Detected zone-form command mode from device replies.")
 
     def mark_invalid(self):
+        """Mark that an invalid-command error was observed."""
         with self._lock:
             self._last_invalid_time = time.time()
 
     def invalid_after(self, ts):
+        """Return True if an invalid-command error occurred after a timestamp."""
         with self._lock:
             return self._last_invalid_time > ts
 
     def note_fallback(self, style):
+        """Record a fallback style selected after invalid-command detection."""
         with self._lock:
             if self._mode == "auto":
                 self._detected = style
@@ -114,7 +124,9 @@ command_mode = CommandMode(COMMAND_STYLE, DEFAULT_COMMAND_STYLE, COMMAND_ZONE)
 
 # Serial connection manager (I/O loop + reconnects + health info)
 class SerialManager:
+    """Manage the serial connection, I/O loop, and health tracking."""
     def __init__(self, port, baud, reconnect_interval, line_handler=None, on_connect=None):
+        """Start the serial I/O thread and configure handlers."""
         self._port = port
         self._baud = baud
         self._reconnect_interval = reconnect_interval
@@ -131,6 +143,7 @@ class SerialManager:
         self._thread.start()
 
     def _io_loop(self):
+        """Main serial read loop with reconnect and error recovery."""
         while not self._stop_event.is_set():
             try:
                 if not self._is_connected():
@@ -164,18 +177,21 @@ class SerialManager:
             except Exception as exc:
                 logging.exception("Serial loop error: %s", exc)
                 self._record_error("Serial loop error: %s" % exc)
-                self._close()
-                self._stop_event.wait(self._reconnect_interval)
+                    self._close()
+                    self._stop_event.wait(self._reconnect_interval)
 
     def _is_connected(self):
+        """Return True if the serial port is open."""
         with self._lock:
             return self._serial is not None and self._serial.is_open
 
     def _get_serial(self):
+        """Return the current serial object (may be None)."""
         with self._lock:
             return self._serial
 
     def _dispatch_line(self, line):
+        """Dispatch a raw line to the configured line handler."""
         with self._lock:
             self._last_rx_time = time.time()
         if not self._line_handler:
@@ -186,6 +202,7 @@ class SerialManager:
             logging.warning("Serial line handler failed: %s", exc)
 
     def _connect(self):
+        """Open the serial port and invoke on_connect when successful."""
         try:
             ser = serial.Serial(
                 port=self._port,
@@ -214,6 +231,7 @@ class SerialManager:
         return True
 
     def write(self, command):
+        """Write a command to the serial port."""
         data = (command + "\r\n").encode("ascii", errors="ignore")
         with self._lock:
             ser = self._serial
@@ -229,6 +247,7 @@ class SerialManager:
             raise
 
     def _close(self):
+        """Close the serial port if open."""
         with self._lock:
             ser = self._serial
             self._serial = None
@@ -239,19 +258,23 @@ class SerialManager:
                 pass
 
     def stop(self):
+        """Stop the serial I/O thread and close the port."""
         self._stop_event.set()
         self._close()
 
     def _record_error(self, message):
+        """Record the latest serial error for health reporting."""
         with self._lock:
             self._last_error_time = time.time()
             self._last_error = message
 
     def force_reconnect(self, reason):
+        """Force a reconnect cycle, recording the reason."""
         self._record_error("Forced reconnect: %s" % reason)
         self._close()
 
     def health_snapshot(self):
+        """Return a dict of current serial health metrics."""
         with self._lock:
             connected = self._serial is not None and self._serial.is_open
             return {
@@ -267,7 +290,9 @@ class SerialManager:
 
 # Serial watchdog to force reconnect when the line is stale
 class SerialWatchdog:
+    """Monitor serial activity and trigger reconnect on stale link."""
     def __init__(self, manager, stale_timeout, interval):
+        """Start the watchdog thread with configured thresholds."""
         self._manager = manager
         self._stale_timeout = stale_timeout
         self._interval = interval
@@ -278,6 +303,7 @@ class SerialWatchdog:
             self._thread.start()
 
     def _loop(self):
+        """Periodically check for stale serial activity."""
         while not self._stop_event.is_set():
             snapshot = self._manager.health_snapshot()
             if snapshot["connected"] and self._stale_timeout > 0:
@@ -290,6 +316,7 @@ class SerialWatchdog:
             self._stop_event.wait(self._interval)
 
     def stop(self):
+        """Stop the watchdog thread."""
         if not self._thread:
             return
         self._stop_event.set()
@@ -297,7 +324,9 @@ class SerialWatchdog:
 
 # Hold controller for press-and-hold volume changes
 class HoldController:
+    """Handle press-and-hold volume changes with repeated commands."""
     def __init__(self, send_func, get_level_func, set_level_func, interval):
+        """Configure hold behavior and start state."""
         self._send = send_func
         self._get_level = get_level_func
         self._set_level = set_level_func
@@ -308,6 +337,7 @@ class HoldController:
         self._direction = None
 
     def start(self, direction):
+        """Start or switch a hold loop in the given direction."""
         if direction not in ("up", "down"):
             raise ValueError("dir must be 'up' or 'down'")
         with self._lock:
@@ -321,6 +351,7 @@ class HoldController:
             self._thread.start()
 
     def _loop(self):
+        """Issue repeated volume steps until stopped."""
         step = 1 if self._direction == "up" else -1
         while not self._stop_event.is_set():
             try:
@@ -335,10 +366,12 @@ class HoldController:
             self._stop_event.wait(self._interval)
 
     def stop(self):
+        """Stop any active hold loop."""
         with self._lock:
             self._stop_locked()
 
     def _stop_locked(self):
+        """Stop the hold loop without releasing the outer lock."""
         if not self._stop_event:
             return
         self._stop_event.set()
@@ -351,7 +384,9 @@ class HoldController:
 
 # Periodic status query poller
 class QueryPoller:
+    """Periodically send QUERY commands to refresh device state."""
     def __init__(self, send_func, interval, send_immediately=True):
+        """Start the polling thread when interval is positive."""
         self._send = send_func
         self._interval = interval
         self._send_immediately = send_immediately
@@ -362,6 +397,7 @@ class QueryPoller:
             self._thread.start()
 
     def _loop(self):
+        """Issue periodic QUERY commands."""
         initial_delay = 0.5 if self._send_immediately else self._interval
         self._stop_event.wait(initial_delay)
         while not self._stop_event.is_set():
@@ -372,6 +408,7 @@ class QueryPoller:
             self._stop_event.wait(self._interval)
 
     def stop(self):
+        """Stop the poller thread."""
         if not self._thread:
             return
         self._stop_event.set()
@@ -379,7 +416,9 @@ class QueryPoller:
 
 # In-memory state cache for device status
 class StateCache:
+    """Thread-safe cache of last known device state."""
     def __init__(self):
+        """Initialize cached state defaults."""
         self._lock = threading.Lock()
         self._volume = 0
         self._mute = False
@@ -391,70 +430,85 @@ class StateCache:
         self._updated_at = 0.0
 
     def set_volume(self, level):
+        """Update cached volume (clamped)."""
         with self._lock:
             clamped = max(0, min(50, int(level)))
             self._volume = clamped
             self._updated_at = time.time()
 
     def get_volume(self):
+        """Return cached volume."""
         with self._lock:
             return int(self._volume)
 
     def set_mute(self, muted):
+        """Update cached mute state."""
         with self._lock:
             self._mute = bool(muted)
             self._updated_at = time.time()
 
     def get_mute(self):
+        """Return cached mute state."""
         with self._lock:
             return bool(self._mute)
 
     def set_power(self, is_on):
+        """Update cached power state."""
         with self._lock:
             self._power = bool(is_on)
             self._updated_at = time.time()
 
     def get_power(self):
+        """Return cached power state."""
         with self._lock:
             return self._power
 
     def set_input(self, value):
+        """Update cached input value."""
         with self._lock:
             self._input = int(value)
             self._updated_at = time.time()
 
     def get_input(self):
+        """Return cached input value."""
         with self._lock:
             return self._input
 
     def set_model(self, value):
+        """Update cached model."""
         with self._lock:
             self._model = value
             self._updated_at = time.time()
 
     def get_model(self):
+        """Return cached model."""
         with self._lock:
             return self._model
 
     def set_serial_number(self, value):
+        """Update cached serial number."""
         with self._lock:
             self._serial_number = value
             self._updated_at = time.time()
 
     def get_serial_number(self):
+        """Return cached serial number."""
         with self._lock:
             return self._serial_number
 
     def set_firmware(self, value):
+        """Update cached firmware version."""
         with self._lock:
             self._firmware = value
             self._updated_at = time.time()
 
     def get_firmware(self):
+        """Return cached firmware version."""
         with self._lock:
             return self._firmware
 
     def snapshot(self):
+        """Return a snapshot of the cached state."""
         with self._lock:
             return {
                 "volume": int(self._volume),
@@ -469,43 +523,53 @@ class StateCache:
 
 # Buffer of recent serial messages for diagnostics
 class LineBuffer:
+    """Bounded list of recent serial messages for diagnostics."""
     def __init__(self, max_lines=200):
+        """Initialize the line buffer with a max size."""
         self._lock = threading.Lock()
         self._lines = []
         self._max_lines = max_lines
 
     def add(self, line):
+        """Add a line, trimming to the max buffer size."""
         with self._lock:
             self._lines.append(line)
             if len(self._lines) > self._max_lines:
                 self._lines = self._lines[-self._max_lines:]
 
     def clear(self):
+        """Clear all buffered lines."""
         with self._lock:
             self._lines = []
 
     def snapshot(self):
+        """Return a copy of the buffered lines."""
         with self._lock:
             return list(self._lines)
 
 # Command builders (short vs zone)
 def build_power_on(style):
+    """Build the power-on command for the given style."""
     return POWER_ON_SHORT if style == "short" else POWER_ON_ZONE.format(zone=command_mode.zone())
 
 
 def build_power_off(style):
+    """Build the power-off command for the given style."""
     return POWER_OFF_SHORT if style == "short" else POWER_OFF_ZONE.format(zone=command_mode.zone())
 
 
 def build_mute_on(style):
+    """Build the mute-on command for the given style."""
     return MUTE_ON_SHORT if style == "short" else MUTE_ON_ZONE.format(zone=command_mode.zone())
 
 
 def build_mute_off(style):
+    """Build the mute-off command for the given style."""
     return MUTE_OFF_SHORT if style == "short" else MUTE_OFF_ZONE.format(zone=command_mode.zone())
 
 
 def build_volume_set(style, level):
+    """Build the volume set command with clamped level."""
     clamped = max(0, min(50, int(level)))
     if style == "short":
         return VOLUME_SET_SHORT.format(level=clamped)
@@ -513,6 +577,7 @@ def build_volume_set(style, level):
 
 
 def build_input_set(style, value):
+    """Build the input set command for the given style."""
     if style == "short":
         return INPUT_SET_SHORT.format(value=value)
     return INPUT_SET_ZONE.format(zone=command_mode.zone(), value=value)
@@ -520,6 +585,7 @@ def build_input_set(style, value):
 
 # Send with auto-detect fallback for short/zone mode
 def send_with_fallback(short_cmd, zone_cmd):
+    """Send a command with auto-detect fallback for command style."""
     style = command_mode.style()
     cmd = short_cmd if style == "short" else zone_cmd
     send_time = time.time()
@@ -539,6 +605,7 @@ line_buffer = LineBuffer()
 
 # Serial line parsing -> update cache + detect mode
 def handle_serial_line(raw_line):
+    """Parse a raw serial line and update cached state."""
     try:
         text = raw_line.decode("ascii", errors="ignore").strip()
     except Exception:
@@ -660,6 +727,7 @@ app = Flask(__name__)
 
 # Helper to probe device help/firmware output
 def query_help_lines(timeout=1.0):
+    """Request help or query output and return captured lines."""
     line_buffer.clear()
     serial_manager.write(HELP)
     time.sleep(timeout)
@@ -678,12 +746,14 @@ def query_help_lines(timeout=1.0):
 
 @app.route("/ping", methods=["GET"])
 def ping():
+    """Simple liveness check for the HTTP service."""
     return jsonify(ok=True)
 
 
 # Health and diagnostics
 @app.route("/health", methods=["GET"])
 def health():
+    """Return serial health metrics and watchdog settings."""
     snapshot = serial_manager.health_snapshot()
     now = time.time()
     last_rx_time = snapshot["last_rx_time"]
@@ -710,6 +780,7 @@ def health():
 # Power endpoints
 @app.route("/power/on", methods=["POST"])
 def power_on():
+    """Turn power on (with command style auto-detect)."""
     try:
         short_cmd = build_power_on("short")
         zone_cmd = build_power_on("zone")
@@ -725,6 +796,7 @@ def power_on():
 
 @app.route("/power/off", methods=["POST"])
 def power_off():
+    """Turn power off."""
     try:
         short_cmd = build_power_off("short")
         zone_cmd = build_power_off("zone")
@@ -738,6 +810,7 @@ def power_off():
 # Mute endpoints
 @app.route("/mute/on", methods=["POST"])
 def mute_on():
+    """Enable mute."""
     try:
         short_cmd = build_mute_on("short")
         zone_cmd = build_mute_on("zone")
@@ -750,6 +823,7 @@ def mute_on():
 
 @app.route("/mute/off", methods=["POST"])
 def mute_off():
+    """Disable mute."""
     try:
         short_cmd = build_mute_off("short")
         zone_cmd = build_mute_off("zone")
@@ -763,17 +837,20 @@ def mute_off():
 # Read-only state endpoints
 @app.route("/power", methods=["GET"])
 def power_get():
+    """Return cached power state."""
     return jsonify(on=state_cache.get_power())
 
 
 @app.route("/mute", methods=["GET"])
 def mute_get():
+    """Return cached mute state."""
     return jsonify(muted=state_cache.get_mute())
 
 
 # Volume endpoints
 @app.route("/volume/set", methods=["POST"])
 def volume_set():
+    """Set volume with bounds and max-delta enforcement."""
     level = request.args.get("level")
     if level is None:
         data = request.get_json(silent=True) or {}
@@ -799,16 +876,19 @@ def volume_set():
 
 @app.route("/volume", methods=["GET"])
 def volume_get():
+    """Return cached volume level."""
     return jsonify(level=state_cache.get_volume())
 
 
 @app.route("/volume/lvl", methods=["GET"])
 def volume_lvl():
+    """Return cached volume level as plain text."""
     return Response(str(state_cache.get_volume()), mimetype="text/plain")
 
 # Input endpoints
 @app.route("/input/set", methods=["POST"])
 def input_set():
+    """Set active input."""
     value = request.args.get("value")
     if value is None:
         data = request.get_json(silent=True) or {}
@@ -831,11 +911,13 @@ def input_set():
 
 @app.route("/input", methods=["GET"])
 def input_get():
+    """Return cached input value."""
     return jsonify(value=state_cache.get_input())
 
 # Device help/firmware endpoints
 @app.route("/help", methods=["GET"])
 def help_get():
+    """Return help output lines from the device."""
     try:
         timeout = request.args.get("timeout")
         if timeout is None:
@@ -852,6 +934,7 @@ def help_get():
 
 @app.route("/firmware", methods=["GET"])
 def firmware_get():
+    """Return firmware version (cached or parsed from help output)."""
     try:
         timeout = request.args.get("timeout")
         if timeout is None:
@@ -878,6 +961,7 @@ def firmware_get():
 # Aggregate state endpoint
 @app.route("/state", methods=["GET"])
 def state_get():
+    """Return the full cached state snapshot."""
     return jsonify(state_cache.snapshot())
 
 
@@ -892,6 +976,7 @@ hold_controller = HoldController(
 
 @app.route("/hold/start", methods=["POST"])
 def hold_start():
+    """Start a hold loop to step volume up or down."""
     data = request.get_json(silent=True) or {}
     direction = data.get("dir")
     if direction not in ("up", "down"):
@@ -905,6 +990,7 @@ def hold_start():
 
 @app.route("/hold/stop", methods=["POST"])
 def hold_stop():
+    """Stop any active hold loop."""
     hold_controller.stop()
     return Response(status=204)
 
@@ -912,6 +998,7 @@ def hold_stop():
 # Root endpoint
 @app.route("/", methods=["GET"])
 def root():
+    """Return a minimal service identity payload."""
     return Response(
         json.dumps({"ok": True, "service": "ma352-bridge"}),
         mimetype="application/json",
