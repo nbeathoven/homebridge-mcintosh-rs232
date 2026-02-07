@@ -194,7 +194,12 @@ class MA352Platform {
       .onSet(async (value) => {
         const level = Math.max(0, Math.min(50, Math.round(Number(value))));
         this.lastKnown.volume = level;
-        await this.safePost(`/volume/set?level=${level}`, "volume");
+        try {
+          await this.request(`/volume/set?level=${level}`, { method: "POST" });
+        } catch (err) {
+          this.log.warn(`Volume request failed: ${err.message || err}`);
+          throw err;
+        }
         service.updateCharacteristic(Characteristic.Brightness, level);
       })
       .onGet(async () => {
@@ -333,7 +338,23 @@ class MA352Platform {
     }
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status} for ${path}`);
+      let detail = "";
+      try {
+        const data = await response.json();
+        if (data && typeof data.error === "string") {
+          detail = data.error;
+        } else {
+          detail = JSON.stringify(data);
+        }
+      } catch (err) {
+        try {
+          detail = await response.text();
+        } catch (textErr) {
+          detail = "";
+        }
+      }
+      const suffix = detail ? `: ${detail}` : "";
+      throw new Error(`HTTP ${response.status} for ${path}${suffix}`);
     }
     return response;
   }

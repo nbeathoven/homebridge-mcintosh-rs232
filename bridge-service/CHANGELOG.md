@@ -15,3 +15,5 @@
 - Added queued volume ramping for increases above +5 with configurable delay.
 - Updated Homebridge slider behavior to send requested volume (0..50).
 - Bumped default app version to 1.0.1.
+- Included max/requested details in volume validation errors.
+- Homebridge volume set now surfaces bridge errors instead of swallowing them.

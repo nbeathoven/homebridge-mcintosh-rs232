@@ -922,9 +922,9 @@ def volume_set():
     try:
         level_int = int(level)
     except (TypeError, ValueError):
-        return jsonify(error="level must be int 0..50"), 400
+        return jsonify(error="level must be int 0..50", max=50), 400
     if not (0 <= level_int <= 50):
-        return jsonify(error="level must be int 0..50"), 400
+        return jsonify(error="level must be int 0..50", max=50, requested=level_int), 400
     current = state_cache.get_volume()
     if level_int > current and (level_int - current) > VOLUME_RAMP_STEP:
         volume_ramp_controller.request(level_int)
