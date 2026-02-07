@@ -21,3 +21,6 @@
 - Added outbound command logging to correlate invalid-command errors.
 - Logged recent outbound commands when device reports invalid commands.
 - Bumped default app version to 1.0.2.
+- Paused volume ramps and hold changes while muted; resume queued ramps on unmute.
+- Deferred volume changes while muted to prevent auto-unmute.
+- Bumped default app version to 1.0.3.

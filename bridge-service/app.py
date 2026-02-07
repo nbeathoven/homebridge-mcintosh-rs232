@@ -32,7 +32,7 @@ from commands import (
 # Configuration (env overrides supported)
 APP_HOST = os.getenv("BRIDGE_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
-APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.2")
+APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.3")
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "115200"))
@@ -402,11 +402,47 @@ class VolumeRampController:
         self._thread = None
         self._stop_event = None
         self._target = None
+        self._deferred = False
 
-    def request(self, target):
-        """Request a volume increase to a target level."""
+    def request(self, target, defer=False):
+        """Request a volume change to a target level (optionally deferred)."""
         with self._lock:
             self._target = int(target)
+            self._deferred = bool(defer)
+            if self._deferred:
+                self._stop_locked()
+                return
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop_event = threading.Event()
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+
+    def resume(self):
+        """Resume a deferred ramp if a target is present."""
+        with self._lock:
+            target = self._target
+            if target is None:
+                return
+            if self._thread and self._thread.is_alive():
+                return
+            self._deferred = False
+
+        current = self._get_level()
+        if target <= current:
+            try:
+                short_cmd = build_volume_set("short", target)
+                zone_cmd = build_volume_set("zone", target)
+                send_with_fallback(short_cmd, zone_cmd)
+                self._set_level(target)
+            except Exception as exc:
+                logging.warning("Volume resume failed: %s", exc)
+            with self._lock:
+                if self._target == target:
+                    self._target = None
+            return
+
+        with self._lock:
             if self._thread and self._thread.is_alive():
                 return
             self._stop_event = threading.Event()
@@ -418,7 +454,10 @@ class VolumeRampController:
         while not self._stop_event.is_set():
             with self._lock:
                 target = self._target
+                deferred = self._deferred
             if target is None:
+                break
+            if deferred:
                 break
 
             current = self._get_level()
@@ -441,13 +480,43 @@ class VolumeRampController:
 
         with self._lock:
             self._target = None
+            self._deferred = False
 
     def stop(self):
         """Stop any active ramp."""
         with self._lock:
-            if not self._stop_event:
+            self._stop_locked()
+
+    def pause(self):
+        """Pause an active ramp but keep the target for later."""
+        with self._lock:
+            if self._target is None:
                 return
-            self._stop_event.set()
+            self._deferred = True
+            self._stop_locked()
+
+    def has_target(self):
+        """Return True if a target is queued."""
+        with self._lock:
+            return self._target is not None
+
+    def clear(self):
+        """Stop any ramp and clear the queued target."""
+        with self._lock:
+            self._target = None
+            self._deferred = False
+            self._stop_locked()
+
+    def _stop_locked(self):
+        if not self._stop_event:
+            return
+        self._stop_event.set()
+        thread = self._thread
+        self._thread = None
+        self._stop_event = None
+        if thread:
+            thread.join(timeout=0.3)
+
 # Periodic status query poller
 class QueryPoller:
     """Periodically send QUERY commands to refresh device state."""
@@ -931,6 +1000,8 @@ def power_off():
 @app.route("/mute/on", methods=["POST"])
 def mute_on():
     """Enable mute."""
+    volume_ramp_controller.pause()
+    hold_controller.stop()
     try:
         short_cmd = build_mute_on("short")
         zone_cmd = build_mute_on("zone")
@@ -951,6 +1022,8 @@ def mute_off():
     except SerialException as exc:
         return jsonify(error=str(exc)), 503
     state_cache.set_mute(False)
+    if volume_ramp_controller.has_target():
+        volume_ramp_controller.resume()
     return Response(status=204)
 
 
@@ -982,9 +1055,15 @@ def volume_set():
     if not (0 <= level_int <= 50):
         return jsonify(error="level must be int 0..50", max=50, requested=level_int), 400
     current = state_cache.get_volume()
+    if state_cache.get_mute():
+        if level_int != current:
+            volume_ramp_controller.request(level_int, defer=True)
+            return jsonify(level=level_int, queued=True, deferred=True)
+        return jsonify(level=level_int, deferred=True)
     if level_int > current and (level_int - current) > VOLUME_RAMP_STEP:
         volume_ramp_controller.request(level_int)
         return jsonify(level=level_int, queued=True)
+    volume_ramp_controller.clear()
     try:
         short_cmd = build_volume_set("short", level_int)
         zone_cmd = build_volume_set("zone", level_int)
