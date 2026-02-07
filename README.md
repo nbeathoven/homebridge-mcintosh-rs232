@@ -1,5 +1,5 @@
 # About
-I always wanted a simple way to control my McIntosh amp from HomeKit. I already had Homebridge running for other devices, and I really appreciated other people’s attempts at solving this—but none of them worked exactly the way I wanted. So here we are.
+I always wanted a simple way to control my McIntosh amp from HomeKit. I already had Homebridge running for other devices, and I really appreciated other people’s attempts at solving this, but none of them worked exactly the way I wanted. So here we are.
 
 I grabbed a Raspberry Pi Zero 2W and kept it as lean as possible (minimal packages, no extra fluff). On top of that, I built a lightweight bridge that runs on the Pi, talks to the amp over RS-232, and exposes the controls through Homebridge so it shows up nicely in Apple Home.
 The Pi connects to the McIntosh using a USB-A to RS-232 adapter and the proper cable into the McIntosh control port. My little nook is up and running now! hopefully you’ll find this useful too.
