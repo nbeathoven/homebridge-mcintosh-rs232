@@ -32,7 +32,7 @@ from commands import (
 # Configuration (env overrides supported)
 APP_HOST = os.getenv("BRIDGE_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
-APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.5")
+APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.6")
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "115200"))
@@ -453,7 +453,11 @@ class VolumeRampController:
 
     def _loop(self):
         """Ramp volume upward in steps until the target is reached."""
-        while not self._stop_event.is_set():
+        with self._lock:
+            stop_event = self._stop_event
+        if stop_event is None:
+            return
+        while not stop_event.is_set():
             with self._lock:
                 target = self._target
                 deferred = self._deferred
@@ -478,7 +482,7 @@ class VolumeRampController:
 
             if next_level >= target:
                 break
-            self._stop_event.wait(self._delay)
+            stop_event.wait(self._delay)
 
         with self._lock:
             self._target = None

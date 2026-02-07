@@ -28,3 +28,5 @@
 - Added STARTUP_VOLUME and STARTUP_VOLUME_ENABLED settings.
 - Bumped default app version to 1.0.4.
 - Changed default startup volume to 15 and bumped app version to 1.0.5.
+- Fixed race in volume ramp thread when stop_event is cleared.
+- Bumped default app version to 1.0.6.
