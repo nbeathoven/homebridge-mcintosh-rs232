@@ -865,8 +865,8 @@ def volume_set():
     if not (0 <= level_int <= 50):
         return jsonify(error="level must be int 0..50"), 400
     current = state_cache.get_volume()
-    if abs(level_int - current) > 10:
-        return jsonify(error="level change must be <= 10"), 400
+    if level_int > current and (level_int - current) > 5:
+        return jsonify(error="level increase must be <= 5"), 400
     try:
         short_cmd = build_volume_set("short", level_int)
         zone_cmd = build_volume_set("zone", level_int)

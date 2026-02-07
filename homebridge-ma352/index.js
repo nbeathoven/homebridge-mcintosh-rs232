@@ -190,11 +190,18 @@ class MA352Platform {
         return true;
       });
     service.getCharacteristic(Characteristic.Brightness)
-      .setProps({ minValue: 0, maxValue: 100, minStep: 1 })
+      .setProps({ minValue: 0, maxValue: 50, minStep: 1 })
       .onSet(async (value) => {
-        const level = Math.max(0, Math.min(100, Math.round(Number(value))));
+        const requested = Math.max(0, Math.min(50, Math.round(Number(value))));
+        const current = Number.isFinite(this.lastKnown.volume) ? this.lastKnown.volume : 0;
+        let level = requested;
+        if (level > current && (level - current) > 5) {
+          level = current + 5;
+          this.log.warn(`Volume increase limited to +5 (requested ${requested}, using ${level}).`);
+        }
         this.lastKnown.volume = level;
         await this.safePost(`/volume/set?level=${level}`, "volume");
+        service.updateCharacteristic(Characteristic.Brightness, level);
       })
       .onGet(async () => {
         const level = await this.safeGetVolume();
@@ -237,7 +244,7 @@ class MA352Platform {
       const res = await this.request("/volume");
       const data = await res.json();
       if (typeof data.level === "number") {
-        return Math.max(0, Math.min(100, Math.round(data.level)));
+        return Math.max(0, Math.min(50, Math.round(data.level)));
       }
     } catch (err) {
       this.log.warn(`Volume read failed: ${err.message || err}`);
@@ -248,7 +255,7 @@ class MA352Platform {
       const text = await res.text();
       const level = Number(text.trim());
       if (!Number.isNaN(level)) {
-        return Math.max(0, Math.min(100, Math.round(level)));
+        return Math.max(0, Math.min(50, Math.round(level)));
       }
     } catch (err) {
       this.log.warn(`Volume fallback read failed: ${err.message || err}`);

@@ -10,3 +10,5 @@
 - Added docstrings for functions and classes to improve readability.
 - Added app version to startup log and health/root responses.
 - Set default app version baseline to 1.0.0.
+- Limited volume increases to +5 per request; decreases may be larger.
+- Matched Homebridge volume slider to 0..50 with +5 max increase.
