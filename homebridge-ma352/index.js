@@ -2,6 +2,9 @@
 
 const PLUGIN_NAME = "homebridge-ma352";
 const PLATFORM_NAME = "MA352Platform";
+const VOLUME_MAX = 50;
+const VOLUME_RAMP_STEP = 5;
+const VOLUME_RAMP_DELAY_MS = 1000;
 
 class MA352Platform {
   constructor(log, config, api) {
@@ -22,6 +25,8 @@ class MA352Platform {
       volume: 0,
       input: null,
     };
+    this.volumeRampTimer = null;
+    this.volumeRampTarget = null;
 
     this.inputMap = this.buildInputMap();
 
@@ -190,17 +195,25 @@ class MA352Platform {
         return true;
       });
     service.getCharacteristic(Characteristic.Brightness)
-      .setProps({ minValue: 0, maxValue: 50, minStep: 1 })
+      .setProps({ minValue: 0, maxValue: VOLUME_MAX, minStep: 1 })
       .onSet(async (value) => {
-        const level = Math.max(0, Math.min(50, Math.round(Number(value))));
-        this.lastKnown.volume = level;
+        const requested = Math.max(0, Math.min(VOLUME_MAX, Math.round(Number(value))));
+        const current = Number.isFinite(this.lastKnown.volume) ? this.lastKnown.volume : 0;
+        this.stopVolumeRamp();
         try {
-          await this.request(`/volume/set?level=${level}`, { method: "POST" });
+          await this.request(`/volume/set?level=${requested}`, { method: "POST" });
         } catch (err) {
           this.log.warn(`Volume request failed: ${err.message || err}`);
           throw err;
         }
-        service.updateCharacteristic(Characteristic.Brightness, level);
+
+        if (requested > current && (requested - current) > VOLUME_RAMP_STEP) {
+          this.startVolumeRamp(service, requested);
+          return;
+        }
+
+        this.lastKnown.volume = requested;
+        service.updateCharacteristic(Characteristic.Brightness, requested);
       })
       .onGet(async () => {
         const level = await this.safeGetVolume();
@@ -238,12 +251,45 @@ class MA352Platform {
     }
   }
 
+  startVolumeRamp(service, target) {
+    this.stopVolumeRamp();
+    this.volumeRampTarget = target;
+
+    const tick = () => {
+      const current = Number.isFinite(this.lastKnown.volume) ? this.lastKnown.volume : 0;
+      if (current >= target) {
+        this.volumeRampTimer = null;
+        return;
+      }
+      const next = Math.min(target, current + VOLUME_RAMP_STEP);
+      this.lastKnown.volume = next;
+      service.updateCharacteristic(this.api.hap.Characteristic.Brightness, next);
+      if (next < target) {
+        this.volumeRampTimer = setTimeout(tick, VOLUME_RAMP_DELAY_MS);
+      } else {
+        this.volumeRampTimer = null;
+      }
+    };
+
+    this.volumeRampTimer = setTimeout(tick, 0);
+  }
+
+  stopVolumeRamp() {
+    if (!this.volumeRampTimer) {
+      this.volumeRampTarget = null;
+      return;
+    }
+    clearTimeout(this.volumeRampTimer);
+    this.volumeRampTimer = null;
+    this.volumeRampTarget = null;
+  }
+
   async safeGetVolume() {
     try {
       const res = await this.request("/volume");
       const data = await res.json();
       if (typeof data.level === "number") {
-        return Math.max(0, Math.min(50, Math.round(data.level)));
+        return Math.max(0, Math.min(VOLUME_MAX, Math.round(data.level)));
       }
     } catch (err) {
       this.log.warn(`Volume read failed: ${err.message || err}`);
@@ -254,7 +300,7 @@ class MA352Platform {
       const text = await res.text();
       const level = Number(text.trim());
       if (!Number.isNaN(level)) {
-        return Math.max(0, Math.min(50, Math.round(level)));
+        return Math.max(0, Math.min(VOLUME_MAX, Math.round(level)));
       }
     } catch (err) {
       this.log.warn(`Volume fallback read failed: ${err.message || err}`);

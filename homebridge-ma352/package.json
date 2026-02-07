@@ -1,6 +1,6 @@
 {
   "name": "homebridge-ma352",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Homebridge platform plugin for McIntosh MA-352 via local RS-232 bridge",
   "main": "index.js",
   "keywords": [
