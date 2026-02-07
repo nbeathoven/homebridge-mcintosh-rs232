@@ -32,7 +32,7 @@ from commands import (
 # Configuration (env overrides supported)
 APP_HOST = os.getenv("BRIDGE_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
-APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.4")
+APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.5")
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "115200"))
@@ -47,7 +47,7 @@ VOLUME_RAMP_DELAY = float(os.getenv("VOLUME_RAMP_DELAY", "1.0"))
 OUTBOUND_LOG_MAX = max(10, int(os.getenv("OUTBOUND_LOG_MAX", "200")))
 INVALID_CMD_LOOKBACK = float(os.getenv("INVALID_CMD_LOOKBACK", "2.0"))
 STARTUP_VOLUME_ENABLED = os.getenv("STARTUP_VOLUME_ENABLED", "1") != "0"
-STARTUP_VOLUME = int(os.getenv("STARTUP_VOLUME", "20"))
+STARTUP_VOLUME = int(os.getenv("STARTUP_VOLUME", "15"))
 COMMAND_STYLE = os.getenv("COMMAND_STYLE", "auto").lower()
 DEFAULT_COMMAND_STYLE = os.getenv("DEFAULT_COMMAND_STYLE", "short").lower()
 COMMAND_ZONE = os.getenv("COMMAND_ZONE", "Z1")

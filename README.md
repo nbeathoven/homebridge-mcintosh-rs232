@@ -66,7 +66,7 @@ Tip: use a stable serial path like `/dev/serial/by-id/...` instead of `/dev/ttyU
 - `OUTBOUND_LOG_MAX` (default `200`; max outbound commands kept for correlation)
 - `INVALID_CMD_LOOKBACK` (default `2.0` seconds; lookback window for invalid command correlation)
 - `STARTUP_VOLUME_ENABLED` (default `1`; set `0` to disable startup volume)
-- `STARTUP_VOLUME` (default `20`; applied once on first serial connect)
+- `STARTUP_VOLUME` (default `15`; applied once on first serial connect)
 - `COMMAND_STYLE` (`auto`, `short`, or `zone`; default `auto`)
 - `DEFAULT_COMMAND_STYLE` (`short` or `zone`; default `short`)
 - `COMMAND_ZONE` (default `Z1`)

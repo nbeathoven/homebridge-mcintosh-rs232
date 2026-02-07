@@ -27,3 +27,4 @@
 - Applied a startup volume (default 20) on first serial connect after service start.
 - Added STARTUP_VOLUME and STARTUP_VOLUME_ENABLED settings.
 - Bumped default app version to 1.0.4.
+- Changed default startup volume to 15 and bumped app version to 1.0.5.
