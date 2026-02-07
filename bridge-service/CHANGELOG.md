@@ -9,3 +9,4 @@
 - Added section comments throughout app.py for clarity.
 - Added docstrings for functions and classes to improve readability.
 - Added app version to startup log and health/root responses.
+- Set default app version baseline to 1.0.0.
