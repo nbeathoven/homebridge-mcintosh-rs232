@@ -50,6 +50,14 @@ sudo systemctl start ma352-bridge
 
 Tip: use a stable serial path like `/dev/serial/by-id/...` instead of `/dev/ttyUSB0` so it does not change on reboot.
 
+Quick install (RPi)
+```bash
+cd bridge-service
+sudo ./rpi-install.sh
+```
+This installs to `/opt/ma352-bridge`, creates a venv, installs requirements, writes a systemd unit, enables it, and starts it.
+You can override device-specific settings in `/etc/default/ma352-bridge`.
+
 **Environment**
 - `SERIAL_PORT` (default `/dev/ttyUSB0`)
 - `SERIAL_BAUD` (default `115200`)
