@@ -55,17 +55,30 @@ Tip: use a stable serial path like `/dev/serial/by-id/...` instead of `/dev/ttyU
 - `SERIAL_BAUD` (default `115200`)
 - `BRIDGE_HOST` (default `0.0.0.0`)
 - `BRIDGE_PORT` (default `5000`)
+- `BRIDGE_VERSION` (default `1.0.2`; reported by `/health` and `/`)
 - `HOLD_INTERVAL` (default `0.12` seconds)
 - `QUERY_INTERVAL` (default `5.0` seconds; set `0` to disable polling)
 - `QUERY_ON_CONNECT` (default `1`; set `0` to wait for the first poll interval)
+- `SERIAL_STALE_TIMEOUT` (default `30.0` seconds; force reconnect if no RX)
+- `SERIAL_WATCHDOG_INTERVAL` (default `2.0` seconds; watchdog check interval)
+- `VOLUME_RAMP_STEP` (default `5`; max step for queued volume increases)
+- `VOLUME_RAMP_DELAY` (default `1.0` seconds; delay between queued steps)
+- `OUTBOUND_LOG_MAX` (default `200`; max outbound commands kept for correlation)
+- `INVALID_CMD_LOOKBACK` (default `2.0` seconds; lookback window for invalid command correlation)
 - `COMMAND_STYLE` (`auto`, `short`, or `zone`; default `auto`)
 - `DEFAULT_COMMAND_STYLE` (`short` or `zone`; default `short`)
 - `COMMAND_ZONE` (default `Z1`)
 
 The bridge supports both short‑form commands (e.g., `PWR`, `VOL`) and zone‑form commands (e.g., `PON Z1`, `VST Z1`). In `auto` mode it will detect and fall back if the device reports `Invalid Command`.
 
+**Volume Behavior**
+- Volume is capped at `0..50`.
+- Large increases are queued and ramped in steps of `VOLUME_RAMP_STEP` with `VOLUME_RAMP_DELAY` between steps.
+- Decreases are applied immediately.
+
 **HTTP API**
 - `GET /ping`
+- `GET /health` (serial status, version, watchdog info)
 - `POST /power/on`, `POST /power/off`, `GET /power`
 - `POST /mute/on`, `POST /mute/off`, `GET /mute`
 - `POST /volume/set?level=NN`, `GET /volume`, `GET /volume/lvl`
@@ -74,6 +87,10 @@ The bridge supports both short‑form commands (e.g., `PWR`, `VOL`) and zone‑f
 - `GET /state`
 - `GET /help` (tries `HLP`, falls back to `QRY`)
 - `GET /firmware` (derived from `QRY`/`HLP`)
+
+**Health & Diagnostics**
+- `GET /health` returns serial connection status, last RX times, and version.
+- Invalid command warnings include recent outbound commands for correlation.
 
 **Test Commands**
 ```bash
@@ -85,6 +102,7 @@ curl -X POST http://127.0.0.1:5000/mute/off
 curl -X POST "http://127.0.0.1:5000/volume/set?level=30"
 curl -X POST "http://127.0.0.1:5000/input/set?value=3"
 curl http://127.0.0.1:5000/state
+curl http://127.0.0.1:5000/health
 curl "http://127.0.0.1:5000/help?timeout=1.5"
 curl "http://127.0.0.1:5000/firmware?timeout=1.5"
 ```
@@ -114,6 +132,7 @@ Homebridge config
 ```
 If `inputs` is omitted, the plugin exposes the default 1–9 map.
 The plugin exposes a single accessory with a TV-style input selector, plus mute and a volume slider under the same device.
+The volume slider is capped at 0–50 and ramps upward in +5 steps to match the bridge queue behavior.
 
 **Security Note**
 This service is designed for a closed LAN. Do not expose the HTTP port to the public internet.
