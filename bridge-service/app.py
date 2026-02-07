@@ -32,6 +32,7 @@ from commands import (
 # Configuration (env overrides supported)
 APP_HOST = os.getenv("BRIDGE_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
+APP_VERSION = os.getenv("BRIDGE_VERSION", "2026.02.07")
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "115200"))
@@ -47,6 +48,7 @@ COMMAND_ZONE = os.getenv("COMMAND_ZONE", "Z1")
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.info("ma352-bridge version %s starting", APP_VERSION)
 
 
 # Command mode detection and selection
@@ -761,6 +763,7 @@ def health():
     last_error_time = snapshot["last_error_time"]
     return jsonify(
         ok=True,
+        version=APP_VERSION,
         serial_connected=snapshot["connected"],
         serial_port=snapshot["port"],
         serial_baud=snapshot["baud"],
@@ -1000,7 +1003,7 @@ def hold_stop():
 def root():
     """Return a minimal service identity payload."""
     return Response(
-        json.dumps({"ok": True, "service": "ma352-bridge"}),
+        json.dumps({"ok": True, "service": "ma352-bridge", "version": APP_VERSION}),
         mimetype="application/json",
     )
 

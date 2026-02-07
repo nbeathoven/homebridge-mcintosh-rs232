@@ -8,3 +8,4 @@
 - Added serial error tracking and stale-connection recovery.
 - Added section comments throughout app.py for clarity.
 - Added docstrings for functions and classes to improve readability.
+- Added app version to startup log and health/root responses.
