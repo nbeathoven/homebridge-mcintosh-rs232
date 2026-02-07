@@ -18,3 +18,6 @@
 - Included max/requested details in volume validation errors.
 - Homebridge volume set now surfaces bridge errors instead of swallowing them.
 - Fixed indentation error in serial loop exception handling.
+- Added outbound command logging to correlate invalid-command errors.
+- Logged recent outbound commands when device reports invalid commands.
+- Bumped default app version to 1.0.2.

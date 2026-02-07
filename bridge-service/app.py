@@ -32,7 +32,7 @@ from commands import (
 # Configuration (env overrides supported)
 APP_HOST = os.getenv("BRIDGE_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
-APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.1")
+APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.2")
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "115200"))
@@ -44,6 +44,8 @@ SERIAL_STALE_TIMEOUT = float(os.getenv("SERIAL_STALE_TIMEOUT", "30.0"))
 SERIAL_WATCHDOG_INTERVAL = float(os.getenv("SERIAL_WATCHDOG_INTERVAL", "2.0"))
 VOLUME_RAMP_STEP = max(1, min(5, int(os.getenv("VOLUME_RAMP_STEP", "5"))))
 VOLUME_RAMP_DELAY = float(os.getenv("VOLUME_RAMP_DELAY", "1.0"))
+OUTBOUND_LOG_MAX = max(10, int(os.getenv("OUTBOUND_LOG_MAX", "200")))
+INVALID_CMD_LOOKBACK = float(os.getenv("INVALID_CMD_LOOKBACK", "2.0"))
 COMMAND_STYLE = os.getenv("COMMAND_STYLE", "auto").lower()
 DEFAULT_COMMAND_STYLE = os.getenv("DEFAULT_COMMAND_STYLE", "short").lower()
 COMMAND_ZONE = os.getenv("COMMAND_ZONE", "Z1")
@@ -236,6 +238,7 @@ class SerialManager:
 
     def write(self, command):
         """Write a command to the serial port."""
+        record_outbound(command)
         data = (command + "\r\n").encode("ascii", errors="ignore")
         with self._lock:
             ser = self._serial
@@ -610,6 +613,49 @@ class LineBuffer:
         with self._lock:
             return list(self._lines)
 
+# Recent outbound command log for correlation with device errors
+class OutboundLog:
+    """Bounded list of outbound serial commands with timestamps."""
+    def __init__(self, max_entries=200):
+        """Initialize the outbound log with a max size."""
+        self._lock = threading.Lock()
+        self._entries = []
+        self._max_entries = max_entries
+
+    def add(self, command):
+        """Record an outbound command with a timestamp."""
+        entry = {"ts": time.time(), "cmd": command}
+        with self._lock:
+            self._entries.append(entry)
+            if len(self._entries) > self._max_entries:
+                self._entries = self._entries[-self._max_entries:]
+
+    def recent_since(self, cutoff_ts):
+        """Return entries recorded at or after the cutoff timestamp."""
+        with self._lock:
+            return [entry for entry in self._entries if entry["ts"] >= cutoff_ts]
+
+    def last(self):
+        """Return the most recent entry or None."""
+        with self._lock:
+            if not self._entries:
+                return None
+            return self._entries[-1]
+
+
+def record_outbound(command):
+    """Record an outbound command for later correlation."""
+    outbound_log.add(command)
+
+
+def format_outbound_entries(entries):
+    """Format outbound entries for log output."""
+    formatted = []
+    for entry in entries:
+        ts = time.strftime("%H:%M:%S", time.localtime(entry["ts"]))
+        formatted.append(f"{entry['cmd']} @ {ts}")
+    return ", ".join(formatted)
+
 # Command builders (short vs zone)
 def build_power_on(style):
     """Build the power-on command for the given style."""
@@ -665,6 +711,7 @@ def send_with_fallback(short_cmd, zone_cmd):
 # Shared singletons
 state_cache = StateCache()
 line_buffer = LineBuffer()
+outbound_log = OutboundLog(OUTBOUND_LOG_MAX)
 
 # Serial line parsing -> update cache + detect mode
 def handle_serial_line(raw_line):
@@ -692,7 +739,16 @@ def handle_serial_line(raw_line):
         upper_body = body.upper()
         if "ERROR" in upper_body and "INVALID COMMAND" in upper_body:
             command_mode.mark_invalid()
-            logging.warning("Device error: %s", message)
+            cutoff = time.time() - INVALID_CMD_LOOKBACK
+            recent = outbound_log.recent_since(cutoff)
+            if recent:
+                logging.warning("Device error: %s; recent outbound: %s", message, format_outbound_entries(recent))
+            else:
+                last = outbound_log.last()
+                if last:
+                    logging.warning("Device error: %s; last outbound: %s", message, format_outbound_entries([last]))
+                else:
+                    logging.warning("Device error: %s", message)
             continue
         if upper_body.startswith("SERIAL NUMBER"):
             parts = body.split(":", 1)
