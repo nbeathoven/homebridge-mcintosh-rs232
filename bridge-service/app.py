@@ -2,9 +2,17 @@
 import json
 import logging
 import os
+import queue
 import re
+import socket
+import struct
 import threading
 import time
+
+try:
+    import fcntl  # Unix/Linux only (BRIDGE_INTERFACE lookup)
+except ImportError:
+    fcntl = None
 
 # Third-party imports
 from flask import Flask, Response, jsonify, request
@@ -14,6 +22,7 @@ from serial import SerialException
 # Command definitions
 from commands import (
     HELP,
+    HELP_ZONE,
     INPUT_SET_SHORT,
     INPUT_SET_ZONE,
     MUTE_OFF_SHORT,
@@ -25,14 +34,50 @@ from commands import (
     POWER_ON_SHORT,
     POWER_ON_ZONE,
     QUERY,
+    QUERY_ZONE,
     VOLUME_SET_SHORT,
     VOLUME_SET_ZONE,
 )
 
 # Configuration (env overrides supported)
-APP_HOST = os.getenv("BRIDGE_HOST", "0.0.0.0")
+def _ipv4_for_interface(ifname):
+    """Return IPv4 for a Linux interface name (e.g. eth0), or None on failure."""
+    if not ifname or fcntl is None:
+        return None
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        ifreq = struct.pack("256s", ifname[:15].encode("utf-8"))
+        res = fcntl.ioctl(s.fileno(), 0x8915, ifreq)  # SIOCGIFADDR
+        return socket.inet_ntoa(res[20:24])
+    except OSError:
+        return None
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def resolve_app_host():
+    """
+    Bind order:
+      1) BRIDGE_HOST if set (explicit IP/host)
+      2) BRIDGE_INTERFACE IPv4 if set (e.g. eth0 -> 192.168.1.10)
+      3) Default to localhost (secure by default)
+    """
+    host = os.getenv("BRIDGE_HOST", "").strip()
+    if host:
+        return host
+    iface = os.getenv("BRIDGE_INTERFACE", "").strip()
+    ip = _ipv4_for_interface(iface) if iface else None
+    if ip:
+        return ip
+    return "127.0.0.1"
+
+
+APP_HOST = resolve_app_host()
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
-APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.6")
+APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.8")
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "115200"))
@@ -40,6 +85,10 @@ RECONNECT_INTERVAL = float(os.getenv("RECONNECT_INTERVAL", "2.0"))
 HOLD_INTERVAL = float(os.getenv("HOLD_INTERVAL", "0.12"))
 QUERY_INTERVAL = float(os.getenv("QUERY_INTERVAL", "5.0"))
 QUERY_ON_CONNECT = os.getenv("QUERY_ON_CONNECT", "1") != "0"
+STATUS_ON_CONNECT = os.getenv("STATUS_ON_CONNECT", "1") != "0"
+STATUS_QUERY_TIMEOUT = float(os.getenv("STATUS_QUERY_TIMEOUT", "1.0"))
+STATUS_QUERY_DELAY = float(os.getenv("STATUS_QUERY_DELAY", "5.0"))
+SERIAL_WRITE_TIMEOUT = float(os.getenv("SERIAL_WRITE_TIMEOUT", "2.0"))
 SERIAL_STALE_TIMEOUT = float(os.getenv("SERIAL_STALE_TIMEOUT", "30.0"))
 SERIAL_WATCHDOG_INTERVAL = float(os.getenv("SERIAL_WATCHDOG_INTERVAL", "2.0"))
 VOLUME_RAMP_STEP = max(1, min(5, int(os.getenv("VOLUME_RAMP_STEP", "5"))))
@@ -60,6 +109,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logging.info("ma352-bridge version %s starting", APP_VERSION)
 
 
+runtime_lock = threading.Lock()
+runtime_started = False
+
+
 # Command mode detection and selection
 class CommandMode:
     """Track and auto-detect whether the device expects short or zone commands."""
@@ -71,6 +124,9 @@ class CommandMode:
         self._lock = threading.Lock()
         self._detected = None
         self._last_invalid_time = 0.0
+        self._last_invalid_cmd = None
+        self._probe_active = False
+        self._probe_completed = False
 
     def zone(self):
         """Return the configured zone identifier."""
@@ -92,12 +148,38 @@ class CommandMode:
         with self._lock:
             return self._detected is not None
 
+    def begin_probe(self):
+        """Enable probe mode for auto-detection (only once)."""
+        with self._lock:
+            if self._mode != "auto":
+                return False
+            if self._probe_completed:
+                return False
+            self._probe_active = True
+            return True
+
+    def end_probe(self):
+        """Disable probe mode and finalize auto-detection."""
+        with self._lock:
+            self._probe_active = False
+            self._probe_completed = True
+
+    def allow_fallback(self):
+        """Return True if fallback should be attempted."""
+        with self._lock:
+            return self._mode == "auto" and self._probe_active
+
+    def needs_probe(self):
+        """Return True if auto-detection probe should run."""
+        with self._lock:
+            return self._mode == "auto" and not self._probe_completed
+
     def detect_from_parts(self, parts):
         """Infer command style from a parsed response line."""
         if not parts:
             return
         with self._lock:
-            if self._mode != "auto" or self._detected is not None:
+            if self._mode != "auto" or not self._probe_active or self._detected is not None:
                 return
             cmd = parts[0].upper()
             if cmd in ("PWR", "VOL"):
@@ -112,15 +194,20 @@ class CommandMode:
                 self._detected = "zone"
                 logging.info("Detected zone-form command mode from device replies.")
 
-    def mark_invalid(self):
+    def mark_invalid(self, cmd=None, ts=None):
         """Mark that an invalid-command error was observed."""
         with self._lock:
-            self._last_invalid_time = time.time()
+            self._last_invalid_time = ts if ts is not None else time.time()
+            self._last_invalid_cmd = cmd
 
-    def invalid_after(self, ts):
+    def invalid_after(self, ts, cmd=None):
         """Return True if an invalid-command error occurred after a timestamp."""
         with self._lock:
-            return self._last_invalid_time > ts
+            if self._last_invalid_time <= ts:
+                return False
+            if cmd is None:
+                return True
+            return self._last_invalid_cmd == cmd
 
     def note_fallback(self, style):
         """Record a fallback style selected after invalid-command detection."""
@@ -142,6 +229,7 @@ class SerialManager:
         self._baud = baud
         self._reconnect_interval = reconnect_interval
         self._lock = threading.Lock()
+        self._write_queue = queue.Queue()
         self._serial = None
         self._last_rx_time = 0.0
         self._last_connect_time = 0.0
@@ -152,6 +240,8 @@ class SerialManager:
         self._on_connect = on_connect
         self._thread = threading.Thread(target=self._io_loop, daemon=True)
         self._thread.start()
+        self._writer_thread = threading.Thread(target=self._write_loop, daemon=True)
+        self._writer_thread.start()
 
     def _io_loop(self):
         """Main serial read loop with reconnect and error recovery."""
@@ -190,6 +280,48 @@ class SerialManager:
                 self._record_error("Serial loop error: %s" % exc)
                 self._close()
                 self._stop_event.wait(self._reconnect_interval)
+
+    def _write_loop(self):
+        """Single-threaded writer to serialize outbound commands."""
+        while True:
+            if self._stop_event.is_set():
+                try:
+                    item = self._write_queue.get_nowait()
+                except queue.Empty:
+                    break
+            else:
+                try:
+                    item = self._write_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+            if item is None:
+                break
+            command, done = item
+            if self._stop_event.is_set():
+                done["error"] = SerialException("Serial manager stopped")
+                done["event"].set()
+                continue
+            error = None
+            try:
+                data = (command + "\r\n").encode("ascii", errors="ignore")
+                with self._lock:
+                    ser = self._serial
+                if ser is None or not ser.is_open:
+                    raise SerialException("Serial not connected")
+                ser.write(data)
+                ser.flush()
+                record_outbound(command)
+            except SerialException as exc:
+                self._record_error("Serial write failed: %s" % exc)
+                self._close()
+                error = exc
+            except Exception as exc:
+                self._record_error("Serial write unexpected error: %s" % exc)
+                self._close()
+                error = exc
+            finally:
+                done["error"] = error
+                done["event"].set()
 
     def _is_connected(self):
         """Return True if the serial port is open."""
@@ -243,20 +375,18 @@ class SerialManager:
 
     def write(self, command):
         """Write a command to the serial port."""
-        record_outbound(command)
-        data = (command + "\r\n").encode("ascii", errors="ignore")
-        with self._lock:
-            ser = self._serial
-        if ser is None or not ser.is_open:
-            self._record_error("Serial not connected")
-            raise SerialException("Serial not connected")
-        try:
-            ser.write(data)
-            ser.flush()
-        except SerialException:
-            self._record_error("Serial write failed")
-            self._close()
-            raise
+        if self._stop_event.is_set():
+            raise SerialException("Serial manager stopped")
+        done = {"event": threading.Event(), "error": None}
+        self._write_queue.put((command, done))
+        if not done["event"].wait(timeout=SERIAL_WRITE_TIMEOUT):
+            self.force_reconnect(f"write timeout after {SERIAL_WRITE_TIMEOUT}s")
+            raise SerialException(f"Serial write timeout after {SERIAL_WRITE_TIMEOUT}s")
+        err = done["error"]
+        if err:
+            if isinstance(err, SerialException):
+                raise err
+            raise SerialException(str(err))
 
     def _close(self):
         """Close the serial port if open."""
@@ -273,6 +403,9 @@ class SerialManager:
         """Stop the serial I/O thread and close the port."""
         self._stop_event.set()
         self._close()
+        self._write_queue.put(None)
+        if self._writer_thread and self._writer_thread.is_alive():
+            self._writer_thread.join(timeout=0.5)
 
     def _record_error(self, message):
         """Record the latest serial error for health reporting."""
@@ -325,6 +458,16 @@ class SerialWatchdog:
                     if age > self._stale_timeout:
                         logging.warning("Serial stale for %.1fs, forcing reconnect.", age)
                         self._manager.force_reconnect("stale for %.1fs" % age)
+                else:
+                    last_connect = snapshot["last_connect_time"]
+                    if last_connect > 0:
+                        age = time.time() - last_connect
+                        if age > self._stale_timeout:
+                            logging.warning(
+                                "Serial received no data for %.1fs after connect, forcing reconnect.",
+                                age,
+                            )
+                            self._manager.force_reconnect("no rx after connect for %.1fs" % age)
             self._stop_event.wait(self._interval)
 
     def stop(self):
@@ -411,17 +554,24 @@ class VolumeRampController:
 
     def request(self, target, defer=False):
         """Request a volume change to a target level (optionally deferred)."""
+        join_thread = None
+        deferred = False
         with self._lock:
             self._target = int(target)
             self._deferred = bool(defer)
             if self._deferred:
-                self._stop_locked()
-                return
-            if self._thread and self._thread.is_alive():
-                return
-            self._stop_event = threading.Event()
-            self._thread = threading.Thread(target=self._loop, daemon=True)
-            self._thread.start()
+                join_thread = self._stop_locked()
+                deferred = True
+            else:
+                if self._thread and self._thread.is_alive():
+                    return
+                self._stop_event = threading.Event()
+                self._thread = threading.Thread(target=self._loop, daemon=True)
+                self._thread.start()
+        if join_thread:
+            join_thread.join(timeout=0.3)
+        if deferred:
+            return
 
     def resume(self):
         """Resume a deferred ramp if a target is present."""
@@ -488,21 +638,29 @@ class VolumeRampController:
             stop_event.wait(self._delay)
 
         with self._lock:
+            if self._deferred and self._target is not None:
+                return
             self._target = None
             self._deferred = False
 
     def stop(self):
         """Stop any active ramp."""
+        join_thread = None
         with self._lock:
-            self._stop_locked()
+            join_thread = self._stop_locked()
+        if join_thread:
+            join_thread.join(timeout=0.3)
 
     def pause(self):
         """Pause an active ramp but keep the target for later."""
+        join_thread = None
         with self._lock:
             if self._target is None:
                 return
             self._deferred = True
-            self._stop_locked()
+            join_thread = self._stop_locked()
+        if join_thread:
+            join_thread.join(timeout=0.3)
 
     def has_target(self):
         """Return True if a target is queued."""
@@ -516,20 +674,22 @@ class VolumeRampController:
 
     def clear(self):
         """Stop any ramp and clear the queued target."""
+        join_thread = None
         with self._lock:
             self._target = None
             self._deferred = False
-            self._stop_locked()
+            join_thread = self._stop_locked()
+        if join_thread:
+            join_thread.join(timeout=0.3)
 
     def _stop_locked(self):
         if not self._stop_event:
-            return
+            return None
         self._stop_event.set()
         thread = self._thread
         self._thread = None
         self._stop_event = None
-        if thread:
-            thread.join(timeout=0.3)
+        return thread
 
 # Periodic status query poller
 class QueryPoller:
@@ -551,7 +711,7 @@ class QueryPoller:
         self._stop_event.wait(initial_delay)
         while not self._stop_event.is_set():
             try:
-                self._send(QUERY)
+                self._send()
             except Exception as exc:
                 logging.debug("Query send failed: %s", exc)
             self._stop_event.wait(self._interval)
@@ -678,11 +838,13 @@ class LineBuffer:
         self._lock = threading.Lock()
         self._lines = []
         self._max_lines = max_lines
+        self._seq = 0
 
     def add(self, line):
         """Add a line, trimming to the max buffer size."""
         with self._lock:
-            self._lines.append(line)
+            self._seq += 1
+            self._lines.append((self._seq, line))
             if len(self._lines) > self._max_lines:
                 self._lines = self._lines[-self._max_lines:]
 
@@ -691,10 +853,70 @@ class LineBuffer:
         with self._lock:
             self._lines = []
 
+    def checkpoint(self):
+        """Return the latest sequence number for incremental snapshots."""
+        with self._lock:
+            return self._seq
+
+    def snapshot_since(self, seq):
+        """Return buffered lines added after the given sequence."""
+        with self._lock:
+            return [line for entry_seq, line in self._lines if entry_seq > seq]
+
     def snapshot(self):
         """Return a copy of the buffered lines."""
         with self._lock:
+            return [line for _, line in self._lines]
+
+
+class LineCollector:
+    """Collect serial messages for a single request."""
+    def __init__(self, predicate=None, max_lines=200):
+        self._predicate = predicate
+        self._max_lines = max_lines
+        self._lines = []
+        self._lock = threading.Lock()
+        self._event = threading.Event()
+
+    def on_line(self, line):
+        if self._event.is_set():
+            return
+        with self._lock:
+            if self._event.is_set():
+                return
+            self._lines.append(line)
+            if self._predicate and self._predicate(line):
+                self._event.set()
+                return
+            if self._max_lines and len(self._lines) >= self._max_lines:
+                self._event.set()
+
+    def wait(self, timeout):
+        self._event.wait(timeout)
+        with self._lock:
             return list(self._lines)
+
+
+class LineCollectorRegistry:
+    """Registry for active line collectors."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._collectors = []
+
+    def add(self, collector):
+        with self._lock:
+            self._collectors.append(collector)
+
+    def remove(self, collector):
+        with self._lock:
+            if collector in self._collectors:
+                self._collectors.remove(collector)
+
+    def dispatch(self, line):
+        with self._lock:
+            collectors = list(self._collectors)
+        for collector in collectors:
+            collector.on_line(line)
 
 # Recent outbound command log for correlation with device errors
 class OutboundLog:
@@ -775,25 +997,37 @@ def build_input_set(style, value):
     return INPUT_SET_ZONE.format(zone=command_mode.zone(), value=value)
 
 
+def build_help(style):
+    """Build the help command for the given style."""
+    return HELP if style == "short" else HELP_ZONE.format(zone=command_mode.zone())
+
+
+def build_query(style):
+    """Build the query command for the given style."""
+    return QUERY if style == "short" else QUERY_ZONE.format(zone=command_mode.zone())
+
+
 # Send with auto-detect fallback for short/zone mode
 def send_with_fallback(short_cmd, zone_cmd):
     """Send a command with auto-detect fallback for command style."""
+    manager = get_serial_manager()
     style = command_mode.style()
     cmd = short_cmd if style == "short" else zone_cmd
     send_time = time.time()
-    serial_manager.write(cmd)
-    if command_mode.is_auto() and not command_mode.is_detected():
+    manager.write(cmd)
+    if command_mode.allow_fallback() and not command_mode.is_detected():
         time.sleep(0.15)
-        if command_mode.invalid_after(send_time):
+        if command_mode.invalid_after(send_time, cmd=cmd):
             fallback_style = "zone" if style == "short" else "short"
             fallback_cmd = zone_cmd if fallback_style == "zone" else short_cmd
-            serial_manager.write(fallback_cmd)
+            manager.write(fallback_cmd)
             command_mode.note_fallback(fallback_style)
 
 
 # Shared singletons
 state_cache = StateCache()
 line_buffer = LineBuffer()
+line_collectors = LineCollectorRegistry()
 outbound_log = OutboundLog(OUTBOUND_LOG_MAX)
 
 # Serial line parsing -> update cache + detect mode
@@ -810,24 +1044,31 @@ def handle_serial_line(raw_line):
         return
     messages = re.findall(r"\([^)]*\)", cleaned)
     if not messages:
-        logging.debug("Serial line ignored: %s", cleaned)
-        return
+        messages = [cleaned]
 
     for message in messages:
         line_buffer.add(message)
-        body = message[1:-1].strip()
+        line_collectors.dispatch(message)
+        if message.startswith("(") and message.endswith(")"):
+            body = message[1:-1].strip()
+        else:
+            body = message.strip()
         if not body:
             continue
 
         upper_body = body.upper()
         if "ERROR" in upper_body and "INVALID COMMAND" in upper_body:
-            command_mode.mark_invalid()
-            cutoff = time.time() - INVALID_CMD_LOOKBACK
+            now = time.time()
+            last = outbound_log.last()
+            if last:
+                command_mode.mark_invalid(cmd=last["cmd"], ts=now)
+            else:
+                command_mode.mark_invalid(ts=now)
+            cutoff = now - INVALID_CMD_LOOKBACK
             recent = outbound_log.recent_since(cutoff)
             if recent:
                 logging.warning("Device error: %s; recent outbound: %s", message, format_outbound_entries(recent))
             else:
-                last = outbound_log.last()
                 if last:
                     logging.warning("Device error: %s; last outbound: %s", message, format_outbound_entries([last]))
                 else:
@@ -946,12 +1187,33 @@ def _parse_volume_from_lines(lines):
         return None
     return max(0, min(50, volume))
 
+def _detect_mode_from_message(message):
+    """Try to detect command mode from a single message string."""
+    if not message:
+        return
+    text = message.strip()
+    if text.startswith("(") and text.endswith(")"):
+        body = text[1:-1].strip()
+    else:
+        body = text
+    if not body:
+        return
+    parts = body.split()
+    if not parts:
+        return
+    command_mode.detect_from_parts(parts)
+
 def _probe_device_volume(timeout=0.8):
     """Query the device and return the reported volume, if any."""
-    line_buffer.clear()
-    serial_manager.write(QUERY)
-    time.sleep(timeout)
-    lines = line_buffer.snapshot()
+    collector = LineCollector()
+    line_collectors.add(collector)
+    try:
+        short_cmd = build_query("short")
+        zone_cmd = build_query("zone")
+        send_with_fallback(short_cmd, zone_cmd)
+        lines = collector.wait(timeout)
+    finally:
+        line_collectors.remove(collector)
     return _parse_volume_from_lines(lines)
 
 def _startup_volume_worker():
@@ -995,28 +1257,166 @@ def _startup_volume_worker():
     except Exception as exc:
         logging.warning("Startup volume set failed: %s", exc)
 
+def _refresh_status_on_connect(timeout=1.0, delay=0.0):
+    """Query device status to populate cached state, then log a state snapshot."""
+    if delay > 0:
+        time.sleep(delay)
+
+    collector = LineCollector()
+    line_collectors.add(collector)
+    try:
+        short_cmd = build_query("short")
+        zone_cmd = build_query("zone")
+        send_with_fallback(short_cmd, zone_cmd)
+        # Wait for device to answer (or timeout)
+        collector.wait(timeout)
+    finally:
+        line_collectors.remove(collector)
+
+    # Give the serial parser a tiny moment to process any trailing lines
+    time.sleep(0.05)
+
+    _log_state_snapshot(prefix="Startup state")
+
+
+def _log_state_snapshot(prefix="Startup state"):
+    snap = state_cache.snapshot()
+    # Flatten to match your curl output style
+    payload = {
+        "firmware": snap.get("firmware"),
+        "input": snap.get("input"),
+        "model": snap.get("model"),
+        "mute": snap.get("mute"),
+        "power": snap.get("power"),
+        "serial_number": snap.get("serial_number"),
+        "updated_at": snap.get("updated_at"),
+        "volume": snap.get("volume"),
+    }
+    logging.info("%s: %s", prefix, json.dumps(payload, separators=(",", ":")))
+
+def _command_mode_probe(timeout=1.0):
+    """Probe the device to auto-detect short vs zone command style."""
+    if not command_mode.begin_probe():
+        return
+    try:
+        def predicate(line):
+            _detect_mode_from_message(line)
+            return command_mode.is_detected()
+
+        for cmd in (QUERY, HELP):
+            collector = LineCollector(predicate=predicate)
+            line_collectors.add(collector)
+            try:
+                if cmd == QUERY:
+                    short_cmd = build_query("short")
+                    zone_cmd = build_query("zone")
+                else:
+                    short_cmd = build_help("short")
+                    zone_cmd = build_help("zone")
+                send_with_fallback(short_cmd, zone_cmd)
+                collector.wait(timeout)
+            finally:
+                line_collectors.remove(collector)
+            if command_mode.is_detected():
+                break
+        if not command_mode.is_detected():
+            logging.warning("Command mode auto-detect probe did not determine style; using default.")
+    finally:
+        command_mode.end_probe()
+
 def handle_serial_connect():
     """Apply the configured startup volume on first connect."""
     global startup_volume_applied
-    if not STARTUP_VOLUME_ENABLED:
+    needs_probe = command_mode.needs_probe()
+    needs_startup = STARTUP_VOLUME_ENABLED
+    needs_status = STATUS_ON_CONNECT
+    if not needs_probe and not needs_startup and not needs_status:
         return
-    with startup_volume_lock:
-        if startup_volume_applied:
+
+    def _on_connect_tasks():
+        global startup_volume_applied
+        if needs_probe:
+            _command_mode_probe()
+        if needs_status:
+            _refresh_status_on_connect(STATUS_QUERY_TIMEOUT, STATUS_QUERY_DELAY)
+        if not needs_startup:
             return
-        startup_volume_applied = True
-    threading.Thread(target=_startup_volume_worker, daemon=True).start()
+        with startup_volume_lock:
+            if startup_volume_applied:
+                return
+            startup_volume_applied = True
+        _startup_volume_worker()
+
+    threading.Thread(target=_on_connect_tasks, daemon=True).start()
 
 
-# Serial + polling + watchdog infrastructure
-serial_manager = SerialManager(
-    SERIAL_PORT,
-    SERIAL_BAUD,
-    RECONNECT_INTERVAL,
-    line_handler=handle_serial_line,
-    on_connect=handle_serial_connect,
-)
-query_poller = QueryPoller(serial_manager.write, QUERY_INTERVAL, send_immediately=QUERY_ON_CONNECT)
-serial_watchdog = SerialWatchdog(serial_manager, SERIAL_STALE_TIMEOUT, SERIAL_WATCHDOG_INTERVAL)
+# Runtime-managed singletons (initialized in init_runtime)
+serial_manager = None
+query_poller = None
+serial_watchdog = None
+hold_controller = None
+volume_ramp_controller = None
+
+
+def init_runtime():
+    """Initialize serial manager and background threads once."""
+    global serial_manager, query_poller, serial_watchdog, hold_controller, volume_ramp_controller, runtime_started
+    with runtime_lock:
+        if runtime_started:
+            return
+        serial_manager = SerialManager(
+            SERIAL_PORT,
+            SERIAL_BAUD,
+            RECONNECT_INTERVAL,
+            line_handler=handle_serial_line,
+            on_connect=handle_serial_connect,
+        )
+        def _poll_query():
+            short_cmd = build_query("short")
+            zone_cmd = build_query("zone")
+            send_with_fallback(short_cmd, zone_cmd)
+
+        query_poller = QueryPoller(
+            _poll_query,
+            QUERY_INTERVAL,
+            send_immediately=QUERY_ON_CONNECT,
+        )
+        serial_watchdog = SerialWatchdog(serial_manager, SERIAL_STALE_TIMEOUT, SERIAL_WATCHDOG_INTERVAL)
+        hold_controller = HoldController(
+            serial_manager.write,
+            state_cache.get_volume,
+            state_cache.set_volume,
+            HOLD_INTERVAL,
+        )
+        volume_ramp_controller = VolumeRampController(
+            state_cache.get_volume,
+            state_cache.set_volume,
+            VOLUME_RAMP_STEP,
+            VOLUME_RAMP_DELAY,
+        )
+        runtime_started = True
+
+
+def get_serial_manager():
+    """Return the active serial manager or raise if not initialized."""
+    if serial_manager is None:
+        raise SerialException("Serial runtime not initialized")
+    return serial_manager
+
+
+def get_hold_controller():
+    """Return the hold controller or raise if not initialized."""
+    if hold_controller is None:
+        raise SerialException("Serial runtime not initialized")
+    return hold_controller
+
+
+def get_volume_ramp_controller():
+    """Return the volume ramp controller or raise if not initialized."""
+    if volume_ramp_controller is None:
+        raise SerialException("Serial runtime not initialized")
+    return volume_ramp_controller
+
 
 # Flask app + HTTP routes
 app = Flask(__name__)
@@ -1024,19 +1424,29 @@ app = Flask(__name__)
 # Helper to probe device help/firmware output
 def query_help_lines(timeout=1.0):
     """Request help or query output and return captured lines."""
-    line_buffer.clear()
-    serial_manager.write(HELP)
-    time.sleep(timeout)
-    lines = line_buffer.snapshot()
+    collector = LineCollector()
+    line_collectors.add(collector)
+    try:
+        short_cmd = build_help("short")
+        zone_cmd = build_help("zone")
+        send_with_fallback(short_cmd, zone_cmd)
+        lines = collector.wait(timeout)
+    finally:
+        line_collectors.remove(collector)
     if lines:
         upper_lines = [line.upper() for line in lines]
         if any("INVALID COMMAND" in line for line in upper_lines):
             lines = []
     if not lines:
-        line_buffer.clear()
-        serial_manager.write(QUERY)
-        time.sleep(timeout)
-        lines = line_buffer.snapshot()
+        collector = LineCollector()
+        line_collectors.add(collector)
+        try:
+            short_cmd = build_query("short")
+            zone_cmd = build_query("zone")
+            send_with_fallback(short_cmd, zone_cmd)
+            lines = collector.wait(timeout)
+        finally:
+            line_collectors.remove(collector)
     return lines
 
 
@@ -1050,7 +1460,11 @@ def ping():
 @app.route("/health", methods=["GET"])
 def health():
     """Return serial health metrics and watchdog settings."""
-    snapshot = serial_manager.health_snapshot()
+    try:
+        manager = get_serial_manager()
+    except SerialException as exc:
+        return jsonify(ok=False, error=str(exc)), 503
+    snapshot = manager.health_snapshot()
     now = time.time()
     last_rx_time = snapshot["last_rx_time"]
     last_connect_time = snapshot["last_connect_time"]
@@ -1082,9 +1496,6 @@ def power_on():
         short_cmd = build_power_on("short")
         zone_cmd = build_power_on("zone")
         send_with_fallback(short_cmd, zone_cmd)
-        time.sleep(0.1)
-        style = command_mode.style()
-        serial_manager.write(short_cmd if style == "short" else zone_cmd)
     except SerialException as exc:
         return jsonify(error=str(exc)), 503
     state_cache.set_power(True)
@@ -1108,9 +1519,11 @@ def power_off():
 @app.route("/mute/on", methods=["POST"])
 def mute_on():
     """Enable mute."""
-    volume_ramp_controller.pause()
-    hold_controller.stop()
     try:
+        ramp = get_volume_ramp_controller()
+        hold = get_hold_controller()
+        ramp.pause()
+        hold.stop()
         short_cmd = build_mute_on("short")
         zone_cmd = build_mute_on("zone")
         send_with_fallback(short_cmd, zone_cmd)
@@ -1124,13 +1537,14 @@ def mute_on():
 def mute_off():
     """Disable mute."""
     try:
+        ramp = get_volume_ramp_controller()
         if SAFETY_ENABLED:
-            last_volume_cmd = volume_ramp_controller.get_target()
+            last_volume_cmd = ramp.get_target()
             if last_volume_cmd is None:
                 last_volume_cmd = state_cache.get_volume()
             if last_volume_cmd > SAFE_UNMUTE_MAX:
                 safe_volume = max(0, min(50, SAFE_UNMUTE_FALLBACK))
-                volume_ramp_controller.clear()
+                ramp.clear()
                 short_vol = build_volume_set("short", safe_volume)
                 zone_vol = build_volume_set("zone", safe_volume)
                 send_with_fallback(short_vol, zone_vol)
@@ -1141,8 +1555,8 @@ def mute_off():
     except SerialException as exc:
         return jsonify(error=str(exc)), 503
     state_cache.set_mute(False)
-    if SAFETY_ENABLED and volume_ramp_controller.has_target():
-        volume_ramp_controller.resume()
+    if SAFETY_ENABLED and ramp.has_target():
+        ramp.resume()
     return Response(status=204)
 
 
@@ -1163,6 +1577,10 @@ def mute_get():
 @app.route("/volume/set", methods=["POST"])
 def volume_set():
     """Set volume with bounds; large increases are queued."""
+    try:
+        ramp = get_volume_ramp_controller()
+    except SerialException as exc:
+        return jsonify(error=str(exc)), 503
     level = request.args.get("level")
     if level is None:
         data = request.get_json(silent=True) or {}
@@ -1177,15 +1595,15 @@ def volume_set():
     if SAFETY_ENABLED:
         if state_cache.get_mute():
             if level_int != current:
-                volume_ramp_controller.request(level_int, defer=True)
+                ramp.request(level_int, defer=True)
                 return jsonify(level=level_int, queued=True, deferred=True)
             return jsonify(level=level_int, deferred=True)
         if level_int > current and (level_int - current) > VOLUME_RAMP_STEP:
-            volume_ramp_controller.request(level_int)
+            ramp.request(level_int)
             return jsonify(level=level_int, queued=True)
-        volume_ramp_controller.clear()
+        ramp.clear()
     else:
-        volume_ramp_controller.clear()
+        ramp.clear()
     try:
         short_cmd = build_volume_set("short", level_int)
         zone_cmd = build_volume_set("zone", level_int)
@@ -1287,21 +1705,6 @@ def state_get():
     return jsonify(state_cache.snapshot())
 
 
-# Hold endpoints (press-and-hold volume changes)
-hold_controller = HoldController(
-    serial_manager.write,
-    state_cache.get_volume,
-    state_cache.set_volume,
-    HOLD_INTERVAL,
-)
-volume_ramp_controller = VolumeRampController(
-    state_cache.get_volume,
-    state_cache.set_volume,
-    VOLUME_RAMP_STEP,
-    VOLUME_RAMP_DELAY,
-)
-
-
 @app.route("/hold/start", methods=["POST"])
 def hold_start():
     """Start a hold loop to step volume up or down."""
@@ -1310,7 +1713,11 @@ def hold_start():
     if direction not in ("up", "down"):
         return jsonify(error="dir must be 'up' or 'down'"), 400
     try:
-        hold_controller.start(direction)
+        manager = get_serial_manager()
+        if not manager.health_snapshot().get("connected"):
+            return jsonify(error="Serial not connected"), 503
+        hold = get_hold_controller()
+        hold.start(direction)
     except SerialException as exc:
         return jsonify(error=str(exc)), 503
     return Response(status=204)
@@ -1319,8 +1726,12 @@ def hold_start():
 @app.route("/hold/stop", methods=["POST"])
 def hold_stop():
     """Stop any active hold loop."""
-    hold_controller.stop()
-    return Response(status=204)
+    try:
+        hold = get_hold_controller()
+        hold.stop()
+        return Response(status=204)
+    except SerialException as exc:
+        return jsonify(error=str(exc)), 503
 
 
 # Root endpoint
@@ -1333,6 +1744,17 @@ def root():
     )
 
 
+def create_app():
+    """Return the Flask application (without starting background threads)."""
+    return app
+
+
+def main():
+    """Start runtime threads and run the HTTP server."""
+    init_runtime()
+    app.run(host=APP_HOST, port=APP_PORT)
+
+
 # Local dev entrypoint
 if __name__ == "__main__":
-    app.run(host=APP_HOST, port=APP_PORT)
+    main()

@@ -27,3 +27,7 @@ INPUT_SET_ZONE = "(INP {zone} {value})"
 HELP = "(HLP)"
 
 QUERY = "(QRY)"
+
+# Zone-form helpers (when required by devices that expect zone in queries)
+HELP_ZONE = "(HLP {zone})"
+QUERY_ZONE = "(QRY {zone})"

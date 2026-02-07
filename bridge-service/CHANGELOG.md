@@ -1,6 +1,15 @@
 # Changelog
 
 ## 2026-02-07
+- Added secure bind resolution via `BRIDGE_HOST`/`BRIDGE_INTERFACE`, defaulting to localhost.
+- Added zone-form `HELP`/`QUERY` commands with auto-detect probe and fallback for short vs zone style.
+- Added serial write timeout to prevent hangs and tightened writer thread shutdown via sentinel.
+- Added status-on-connect query with startup state snapshot logging.
+- Added startup volume safety: only apply when not increasing device volume.
+- Added unmute safety fallback volume for high targets.
+- Added `/hold/start` serial connectivity check to fail fast when disconnected.
+- Documented single-process deployment guidance in `README.md`.
+- Bumped default app version to 1.0.8.
 - Hardened serial I/O loop to recover from unexpected exceptions without dying.
 - Capped volume handling at 50 and enforced max per-request change of 10.
 - Clamped volume values in cache, outbound commands, and inbound status parsing.
