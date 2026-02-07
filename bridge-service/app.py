@@ -48,6 +48,9 @@ OUTBOUND_LOG_MAX = max(10, int(os.getenv("OUTBOUND_LOG_MAX", "200")))
 INVALID_CMD_LOOKBACK = float(os.getenv("INVALID_CMD_LOOKBACK", "2.0"))
 STARTUP_VOLUME_ENABLED = os.getenv("STARTUP_VOLUME_ENABLED", "1") != "0"
 STARTUP_VOLUME = int(os.getenv("STARTUP_VOLUME", "15"))
+SAFETY_ENABLED = os.getenv("SAFETY_ENABLED", "1") != "0"
+SAFE_UNMUTE_MAX = int(os.getenv("SAFE_UNMUTE_MAX", "30"))
+SAFE_UNMUTE_FALLBACK = int(os.getenv("SAFE_UNMUTE_FALLBACK", "20"))
 COMMAND_STYLE = os.getenv("COMMAND_STYLE", "auto").lower()
 DEFAULT_COMMAND_STYLE = os.getenv("DEFAULT_COMMAND_STYLE", "short").lower()
 COMMAND_ZONE = os.getenv("COMMAND_ZONE", "Z1")
@@ -913,22 +916,95 @@ def handle_serial_line(raw_line):
 
 # Startup volume control (applies once per process)
 startup_volume_applied = False
+startup_volume_lock = threading.Lock()
 
-def handle_serial_connect():
-    """Apply the configured startup volume on first connect."""
-    global startup_volume_applied
-    if startup_volume_applied or not STARTUP_VOLUME_ENABLED:
-        return
+def _parse_volume_from_lines(lines):
+    """Extract the last reported volume from serial messages."""
+    volume = None
+    for line in lines:
+        if not line:
+            continue
+        message = line.strip()
+        if message.startswith("(") and message.endswith(")"):
+            body = message[1:-1].strip()
+        else:
+            body = message
+        if not body:
+            continue
+        parts = body.split()
+        if not parts:
+            continue
+        cmd = parts[0].upper()
+        if cmd not in ("VOL", "VST"):
+            continue
+        candidate = parts[-1]
+        try:
+            volume = int(candidate)
+        except ValueError:
+            continue
+    if volume is None:
+        return None
+    return max(0, min(50, volume))
+
+def _probe_device_volume(timeout=0.8):
+    """Query the device and return the reported volume, if any."""
+    line_buffer.clear()
+    serial_manager.write(QUERY)
+    time.sleep(timeout)
+    lines = line_buffer.snapshot()
+    return _parse_volume_from_lines(lines)
+
+def _startup_volume_worker():
+    """Apply startup volume only if it does not increase device volume."""
     level = max(0, min(50, int(STARTUP_VOLUME)))
+    if not SAFETY_ENABLED:
+        try:
+            short_cmd = build_volume_set("short", level)
+            zone_cmd = build_volume_set("zone", level)
+            send_with_fallback(short_cmd, zone_cmd)
+            state_cache.set_volume(level)
+            logging.info("Startup volume set to %s", level)
+        except Exception as exc:
+            logging.warning("Startup volume set failed: %s", exc)
+        return
+
+    try:
+        device_volume = _probe_device_volume()
+    except Exception as exc:
+        logging.warning("Startup volume check failed: %s", exc)
+        return
+    if device_volume is None:
+        logging.warning("Startup volume check returned no volume; leaving unchanged.")
+        return
+    if device_volume < level:
+        logging.info(
+            "Startup volume not applied; device volume %s below startup %s.",
+            device_volume,
+            level,
+        )
+        return
+    if device_volume == level:
+        logging.info("Startup volume already at %s; no change needed.", level)
+        return
     try:
         short_cmd = build_volume_set("short", level)
         zone_cmd = build_volume_set("zone", level)
         send_with_fallback(short_cmd, zone_cmd)
         state_cache.set_volume(level)
-        logging.info("Startup volume set to %s", level)
-        startup_volume_applied = True
+        logging.info("Startup volume set to %s (device was %s).", level, device_volume)
     except Exception as exc:
         logging.warning("Startup volume set failed: %s", exc)
+
+def handle_serial_connect():
+    """Apply the configured startup volume on first connect."""
+    global startup_volume_applied
+    if not STARTUP_VOLUME_ENABLED:
+        return
+    with startup_volume_lock:
+        if startup_volume_applied:
+            return
+        startup_volume_applied = True
+    threading.Thread(target=_startup_volume_worker, daemon=True).start()
 
 
 # Serial + polling + watchdog infrastructure
@@ -1048,23 +1124,24 @@ def mute_on():
 def mute_off():
     """Disable mute."""
     try:
-        last_volume_cmd = volume_ramp_controller.get_target()
-        if last_volume_cmd is None:
-            last_volume_cmd = state_cache.get_volume()
-        if last_volume_cmd > 30:
-            safe_volume = 20
-            volume_ramp_controller.clear()
-            short_vol = build_volume_set("short", safe_volume)
-            zone_vol = build_volume_set("zone", safe_volume)
-            send_with_fallback(short_vol, zone_vol)
-            state_cache.set_volume(safe_volume)
+        if SAFETY_ENABLED:
+            last_volume_cmd = volume_ramp_controller.get_target()
+            if last_volume_cmd is None:
+                last_volume_cmd = state_cache.get_volume()
+            if last_volume_cmd > SAFE_UNMUTE_MAX:
+                safe_volume = max(0, min(50, SAFE_UNMUTE_FALLBACK))
+                volume_ramp_controller.clear()
+                short_vol = build_volume_set("short", safe_volume)
+                zone_vol = build_volume_set("zone", safe_volume)
+                send_with_fallback(short_vol, zone_vol)
+                state_cache.set_volume(safe_volume)
         short_cmd = build_mute_off("short")
         zone_cmd = build_mute_off("zone")
         send_with_fallback(short_cmd, zone_cmd)
     except SerialException as exc:
         return jsonify(error=str(exc)), 503
     state_cache.set_mute(False)
-    if volume_ramp_controller.has_target():
+    if SAFETY_ENABLED and volume_ramp_controller.has_target():
         volume_ramp_controller.resume()
     return Response(status=204)
 
@@ -1097,15 +1174,18 @@ def volume_set():
     if not (0 <= level_int <= 50):
         return jsonify(error="level must be int 0..50", max=50, requested=level_int), 400
     current = state_cache.get_volume()
-    if state_cache.get_mute():
-        if level_int != current:
-            volume_ramp_controller.request(level_int, defer=True)
-            return jsonify(level=level_int, queued=True, deferred=True)
-        return jsonify(level=level_int, deferred=True)
-    if level_int > current and (level_int - current) > VOLUME_RAMP_STEP:
-        volume_ramp_controller.request(level_int)
-        return jsonify(level=level_int, queued=True)
-    volume_ramp_controller.clear()
+    if SAFETY_ENABLED:
+        if state_cache.get_mute():
+            if level_int != current:
+                volume_ramp_controller.request(level_int, defer=True)
+                return jsonify(level=level_int, queued=True, deferred=True)
+            return jsonify(level=level_int, deferred=True)
+        if level_int > current and (level_int - current) > VOLUME_RAMP_STEP:
+            volume_ramp_controller.request(level_int)
+            return jsonify(level=level_int, queued=True)
+        volume_ramp_controller.clear()
+    else:
+        volume_ramp_controller.clear()
     try:
         short_cmd = build_volume_set("short", level_int)
         zone_cmd = build_volume_set("zone", level_int)

@@ -57,6 +57,7 @@ sudo ./rpi-install.sh
 ```
 This installs to `/opt/ma352-bridge`, creates a venv, installs requirements, writes a systemd unit, enables it, and starts it.
 You can override device-specific settings in `/etc/default/ma352-bridge`.
+Set `SAFETY_ENABLED=0` there to disable the safety logic.
 
 **Environment**
 - `SERIAL_PORT` (default `/dev/ttyUSB0`)
@@ -75,6 +76,9 @@ You can override device-specific settings in `/etc/default/ma352-bridge`.
 - `INVALID_CMD_LOOKBACK` (default `2.0` seconds; lookback window for invalid command correlation)
 - `STARTUP_VOLUME_ENABLED` (default `1`; set `0` to disable startup volume)
 - `STARTUP_VOLUME` (default `15`; applied once on first serial connect)
+- `SAFETY_ENABLED` (default `1`; set `0` to disable safety logic)
+- `SAFE_UNMUTE_MAX` (default `30`; if last volume exceeds this, unmute clamps)
+- `SAFE_UNMUTE_FALLBACK` (default `20`; volume forced before unmute)
 - `COMMAND_STYLE` (`auto`, `short`, or `zone`; default `auto`)
 - `DEFAULT_COMMAND_STYLE` (`short` or `zone`; default `short`)
 - `COMMAND_ZONE` (default `Z1`)
@@ -83,8 +87,11 @@ The bridge supports both short‑form commands (e.g., `PWR`, `VOL`) and zone‑f
 
 **Volume Behavior**
 - Volume is capped at `0..50`.
-- Large increases are queued and ramped in steps of `VOLUME_RAMP_STEP` with `VOLUME_RAMP_DELAY` between steps.
-- Decreases are applied immediately.
+- With safety enabled (default), large increases are queued and ramped in steps of `VOLUME_RAMP_STEP` with `VOLUME_RAMP_DELAY` between steps.
+- With safety enabled, volume changes requested while muted are deferred until unmute.
+- With safety enabled, unmute will clamp volume to `SAFE_UNMUTE_FALLBACK` if the last requested volume is above `SAFE_UNMUTE_MAX`.
+- With safety enabled, startup volume will only be applied if it does not increase the current device volume.
+- With safety disabled, volume changes are sent immediately and unmute/startup volume clamps are skipped.
 
 **HTTP API**
 - `GET /ping`
