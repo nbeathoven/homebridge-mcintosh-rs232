@@ -192,13 +192,7 @@ class MA352Platform {
     service.getCharacteristic(Characteristic.Brightness)
       .setProps({ minValue: 0, maxValue: 50, minStep: 1 })
       .onSet(async (value) => {
-        const requested = Math.max(0, Math.min(50, Math.round(Number(value))));
-        const current = Number.isFinite(this.lastKnown.volume) ? this.lastKnown.volume : 0;
-        let level = requested;
-        if (level > current && (level - current) > 5) {
-          level = current + 5;
-          this.log.warn(`Volume increase limited to +5 (requested ${requested}, using ${level}).`);
-        }
+        const level = Math.max(0, Math.min(50, Math.round(Number(value))));
         this.lastKnown.volume = level;
         await this.safePost(`/volume/set?level=${level}`, "volume");
         service.updateCharacteristic(Characteristic.Brightness, level);

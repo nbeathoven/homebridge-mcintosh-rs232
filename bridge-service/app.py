@@ -32,7 +32,7 @@ from commands import (
 # Configuration (env overrides supported)
 APP_HOST = os.getenv("BRIDGE_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
-APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.0")
+APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.1")
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "115200"))
@@ -42,6 +42,8 @@ QUERY_INTERVAL = float(os.getenv("QUERY_INTERVAL", "5.0"))
 QUERY_ON_CONNECT = os.getenv("QUERY_ON_CONNECT", "1") != "0"
 SERIAL_STALE_TIMEOUT = float(os.getenv("SERIAL_STALE_TIMEOUT", "30.0"))
 SERIAL_WATCHDOG_INTERVAL = float(os.getenv("SERIAL_WATCHDOG_INTERVAL", "2.0"))
+VOLUME_RAMP_STEP = max(1, min(5, int(os.getenv("VOLUME_RAMP_STEP", "5"))))
+VOLUME_RAMP_DELAY = float(os.getenv("VOLUME_RAMP_DELAY", "1.0"))
 COMMAND_STYLE = os.getenv("COMMAND_STYLE", "auto").lower()
 DEFAULT_COMMAND_STYLE = os.getenv("DEFAULT_COMMAND_STYLE", "short").lower()
 COMMAND_ZONE = os.getenv("COMMAND_ZONE", "Z1")
@@ -384,6 +386,65 @@ class HoldController:
             thread.join(timeout=0.3)
 
 
+# Volume ramp controller for gradual increases
+class VolumeRampController:
+    """Queue volume increases in stepped increments with a delay."""
+    def __init__(self, get_level_func, set_level_func, step, delay):
+        """Configure ramp behavior."""
+        self._get_level = get_level_func
+        self._set_level = set_level_func
+        self._step = max(1, min(5, int(step)))
+        self._delay = max(0.2, float(delay))
+        self._lock = threading.Lock()
+        self._thread = None
+        self._stop_event = None
+        self._target = None
+
+    def request(self, target):
+        """Request a volume increase to a target level."""
+        with self._lock:
+            self._target = int(target)
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop_event = threading.Event()
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+
+    def _loop(self):
+        """Ramp volume upward in steps until the target is reached."""
+        while not self._stop_event.is_set():
+            with self._lock:
+                target = self._target
+            if target is None:
+                break
+
+            current = self._get_level()
+            if target <= current:
+                break
+
+            next_level = min(target, current + self._step)
+            try:
+                short_cmd = build_volume_set("short", next_level)
+                zone_cmd = build_volume_set("zone", next_level)
+                send_with_fallback(short_cmd, zone_cmd)
+                self._set_level(next_level)
+            except Exception as exc:
+                logging.warning("Volume ramp failed: %s", exc)
+                break
+
+            if next_level >= target:
+                break
+            self._stop_event.wait(self._delay)
+
+        with self._lock:
+            self._target = None
+
+    def stop(self):
+        """Stop any active ramp."""
+        with self._lock:
+            if not self._stop_event:
+                return
+            self._stop_event.set()
 # Periodic status query poller
 class QueryPoller:
     """Periodically send QUERY commands to refresh device state."""
@@ -853,7 +914,7 @@ def mute_get():
 # Volume endpoints
 @app.route("/volume/set", methods=["POST"])
 def volume_set():
-    """Set volume with bounds and max-delta enforcement."""
+    """Set volume with bounds; large increases are queued."""
     level = request.args.get("level")
     if level is None:
         data = request.get_json(silent=True) or {}
@@ -865,8 +926,9 @@ def volume_set():
     if not (0 <= level_int <= 50):
         return jsonify(error="level must be int 0..50"), 400
     current = state_cache.get_volume()
-    if level_int > current and (level_int - current) > 5:
-        return jsonify(error="level increase must be <= 5"), 400
+    if level_int > current and (level_int - current) > VOLUME_RAMP_STEP:
+        volume_ramp_controller.request(level_int)
+        return jsonify(level=level_int, queued=True)
     try:
         short_cmd = build_volume_set("short", level_int)
         zone_cmd = build_volume_set("zone", level_int)
@@ -974,6 +1036,12 @@ hold_controller = HoldController(
     state_cache.get_volume,
     state_cache.set_volume,
     HOLD_INTERVAL,
+)
+volume_ramp_controller = VolumeRampController(
+    state_cache.get_volume,
+    state_cache.set_volume,
+    VOLUME_RAMP_STEP,
+    VOLUME_RAMP_DELAY,
 )
 
 

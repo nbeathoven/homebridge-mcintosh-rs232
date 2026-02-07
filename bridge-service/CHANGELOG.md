@@ -12,3 +12,6 @@
 - Set default app version baseline to 1.0.0.
 - Limited volume increases to +5 per request; decreases may be larger.
 - Matched Homebridge volume slider to 0..50 with +5 max increase.
+- Added queued volume ramping for increases above +5 with configurable delay.
+- Updated Homebridge slider behavior to send requested volume (0..50).
+- Bumped default app version to 1.0.1.
