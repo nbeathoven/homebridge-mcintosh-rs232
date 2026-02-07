@@ -24,3 +24,6 @@
 - Paused volume ramps and hold changes while muted; resume queued ramps on unmute.
 - Deferred volume changes while muted to prevent auto-unmute.
 - Bumped default app version to 1.0.3.
+- Applied a startup volume (default 20) on first serial connect after service start.
+- Added STARTUP_VOLUME and STARTUP_VOLUME_ENABLED settings.
+- Bumped default app version to 1.0.4.

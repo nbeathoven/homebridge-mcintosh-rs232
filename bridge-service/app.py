@@ -32,7 +32,7 @@ from commands import (
 # Configuration (env overrides supported)
 APP_HOST = os.getenv("BRIDGE_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
-APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.3")
+APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.4")
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "115200"))
@@ -46,6 +46,8 @@ VOLUME_RAMP_STEP = max(1, min(5, int(os.getenv("VOLUME_RAMP_STEP", "5"))))
 VOLUME_RAMP_DELAY = float(os.getenv("VOLUME_RAMP_DELAY", "1.0"))
 OUTBOUND_LOG_MAX = max(10, int(os.getenv("OUTBOUND_LOG_MAX", "200")))
 INVALID_CMD_LOOKBACK = float(os.getenv("INVALID_CMD_LOOKBACK", "2.0"))
+STARTUP_VOLUME_ENABLED = os.getenv("STARTUP_VOLUME_ENABLED", "1") != "0"
+STARTUP_VOLUME = int(os.getenv("STARTUP_VOLUME", "20"))
 COMMAND_STYLE = os.getenv("COMMAND_STYLE", "auto").lower()
 DEFAULT_COMMAND_STYLE = os.getenv("DEFAULT_COMMAND_STYLE", "short").lower()
 COMMAND_ZONE = os.getenv("COMMAND_ZONE", "Z1")
@@ -900,12 +902,33 @@ def handle_serial_line(raw_line):
             continue
 
 
+# Startup volume control (applies once per process)
+startup_volume_applied = False
+
+def handle_serial_connect():
+    """Apply the configured startup volume on first connect."""
+    global startup_volume_applied
+    if startup_volume_applied or not STARTUP_VOLUME_ENABLED:
+        return
+    level = max(0, min(50, int(STARTUP_VOLUME)))
+    try:
+        short_cmd = build_volume_set("short", level)
+        zone_cmd = build_volume_set("zone", level)
+        send_with_fallback(short_cmd, zone_cmd)
+        state_cache.set_volume(level)
+        logging.info("Startup volume set to %s", level)
+        startup_volume_applied = True
+    except Exception as exc:
+        logging.warning("Startup volume set failed: %s", exc)
+
+
 # Serial + polling + watchdog infrastructure
 serial_manager = SerialManager(
     SERIAL_PORT,
     SERIAL_BAUD,
     RECONNECT_INTERVAL,
     line_handler=handle_serial_line,
+    on_connect=handle_serial_connect,
 )
 query_poller = QueryPoller(serial_manager.write, QUERY_INTERVAL, send_immediately=QUERY_ON_CONNECT)
 serial_watchdog = SerialWatchdog(serial_manager, SERIAL_STALE_TIMEOUT, SERIAL_WATCHDOG_INTERVAL)
