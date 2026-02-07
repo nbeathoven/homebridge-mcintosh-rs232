@@ -506,6 +506,11 @@ class VolumeRampController:
         with self._lock:
             return self._target is not None
 
+    def get_target(self):
+        """Return the queued target volume, if any."""
+        with self._lock:
+            return self._target
+
     def clear(self):
         """Stop any ramp and clear the queued target."""
         with self._lock:
@@ -1043,6 +1048,16 @@ def mute_on():
 def mute_off():
     """Disable mute."""
     try:
+        last_volume_cmd = volume_ramp_controller.get_target()
+        if last_volume_cmd is None:
+            last_volume_cmd = state_cache.get_volume()
+        if last_volume_cmd > 30:
+            safe_volume = 20
+            volume_ramp_controller.clear()
+            short_vol = build_volume_set("short", safe_volume)
+            zone_vol = build_volume_set("zone", safe_volume)
+            send_with_fallback(short_vol, zone_vol)
+            state_cache.set_volume(safe_volume)
         short_cmd = build_mute_off("short")
         zone_cmd = build_mute_off("zone")
         send_with_fallback(short_cmd, zone_cmd)
