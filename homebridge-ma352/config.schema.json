@@ -16,6 +16,27 @@
         "type": "number",
         "default": 5000,
         "description": "HTTP port for the MA352 bridge service"
+      },
+      "inputs": {
+        "title": "Inputs",
+        "type": "array",
+        "description": "Optional list of inputs to expose. If omitted, defaults are used.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "title": "Input Value",
+              "type": "number",
+              "minimum": 1,
+              "maximum": 9
+            },
+            "name": {
+              "title": "Input Name",
+              "type": "string"
+            }
+          },
+          "required": ["value", "name"]
+        }
       }
     }
   }

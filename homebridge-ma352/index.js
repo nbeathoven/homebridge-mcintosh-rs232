@@ -18,7 +18,10 @@ class MA352Platform {
       power: false,
       mute: false,
       volume: 0,
+      input: null,
     };
+
+    this.inputMap = this.buildInputMap();
 
     if (!api) {
       return;
@@ -28,6 +31,38 @@ class MA352Platform {
       this.log.info("MA352 platform initialized; configuring accessories.");
       this.setupAccessories();
     });
+  }
+
+  buildInputMap() {
+    const map = new Map();
+    const inputs = Array.isArray(this.config.inputs) ? this.config.inputs : null;
+    if (inputs && inputs.length > 0) {
+      for (const entry of inputs) {
+        const value = Number(entry?.value);
+        const name = String(entry?.name || "").trim();
+        if (!Number.isInteger(value) || value < 1 || value > 9 || !name) {
+          this.log.warn(`Invalid input entry skipped: ${JSON.stringify(entry)}`);
+          continue;
+        }
+        if (map.has(value)) {
+          this.log.warn(`Duplicate input value ${value} skipped.`);
+          continue;
+        }
+        map.set(value, name);
+      }
+      return map;
+    }
+
+    map.set(1, "MC");
+    map.set(2, "MM");
+    map.set(3, "CD1");
+    map.set(4, "CD2");
+    map.set(5, "DVD");
+    map.set(6, "AUX");
+    map.set(7, "Server");
+    map.set(8, "D2A");
+    map.set(9, "Tuner");
+    return map;
   }
 
   configureAccessory(accessory) {
@@ -43,6 +78,10 @@ class MA352Platform {
 
     const volumeAccessory = this.getOrCreateAccessory("MA352 Volume", "ma352-volume");
     this.setupVolume(volumeAccessory);
+
+    if (this.inputMap.size > 0) {
+      this.setupInputs();
+    }
   }
 
   getOrCreateAccessory(name, key) {
@@ -121,6 +160,53 @@ class MA352Platform {
       });
   }
 
+  setupInputs() {
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    for (const [value, label] of this.inputMap.entries()) {
+      const name = `MA352 Input ${label}`;
+      const key = `ma352-input-${value}`;
+      const accessory = this.getOrCreateAccessory(name, key);
+      const service = accessory.getService(Service.Switch) || accessory.addService(Service.Switch, name);
+
+      service.getCharacteristic(Characteristic.On)
+        .onSet(async (state) => {
+          if (!state) {
+            return;
+          }
+          await this.safeSetInput(value);
+          this.lastKnown.input = value;
+          this.updateInputSwitches(value);
+        })
+        .onGet(async () => {
+          const current = await this.safeGetInput();
+          this.lastKnown.input = current;
+          return current === value;
+        });
+    }
+  }
+
+  updateInputSwitches(selected) {
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    for (const [value, label] of this.inputMap.entries()) {
+      const name = `MA352 Input ${label}`;
+      const key = `ma352-input-${value}`;
+      const uuid = this.api.hap.uuid.generate(key);
+      const accessory = this.accessories.get(uuid);
+      if (!accessory) {
+        continue;
+      }
+      const service = accessory.getService(Service.Switch);
+      if (!service) {
+        continue;
+      }
+      service.getCharacteristic(Characteristic.On).updateValue(value === selected);
+    }
+  }
+
   async safeGetVolume() {
     try {
       const res = await this.request("/volume");
@@ -172,6 +258,31 @@ class MA352Platform {
     }
 
     return this.lastKnown.power;
+  }
+
+  async safeGetInput() {
+    try {
+      const res = await this.request("/input");
+      const data = await res.json();
+      if (typeof data.value === "number") {
+        const value = Math.round(Number(data.value));
+        if (this.inputMap.has(value)) {
+          return value;
+        }
+      }
+    } catch (err) {
+      this.log.warn(`Input read failed: ${err.message || err}`);
+    }
+
+    return this.lastKnown.input;
+  }
+
+  async safeSetInput(value) {
+    try {
+      await this.request(`/input/set?value=${value}`, { method: "POST" });
+    } catch (err) {
+      this.log.warn(`Input request failed: ${err.message || err}`);
+    }
   }
 
   async safePost(path, label) {
