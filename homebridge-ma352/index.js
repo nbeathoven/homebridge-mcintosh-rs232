@@ -9,9 +9,11 @@ class MA352Platform {
     this.config = config || {};
     this.api = api;
 
+    this.deviceName = this.config.name || "McIntosh Amp";
     this.host = this.config.host || "127.0.0.1";
     this.port = this.config.port || 5000;
     this.baseUrl = `http://${this.host}:${this.port}`;
+    this.mainKey = "ma352-main";
 
     this.accessories = new Map();
     this.lastKnown = {
@@ -70,18 +72,11 @@ class MA352Platform {
   }
 
   setupAccessories() {
-    const powerAccessory = this.getOrCreateAccessory("MA352 Power", "ma352-power");
-    this.setupPower(powerAccessory);
-
-    const muteAccessory = this.getOrCreateAccessory("MA352 Mute", "ma352-mute");
-    this.setupMute(muteAccessory);
-
-    const volumeAccessory = this.getOrCreateAccessory("MA352 Volume", "ma352-volume");
-    this.setupVolume(volumeAccessory);
-
-    if (this.inputMap.size > 0) {
-      this.setupInputs();
-    }
+    const mainAccessory = this.getOrCreateAccessory(this.deviceName, this.mainKey);
+    this.removeStaleAccessories(mainAccessory.UUID);
+    this.setupTelevision(mainAccessory);
+    this.setupMute(mainAccessory);
+    this.setupVolume(mainAccessory);
   }
 
   getOrCreateAccessory(name, key) {
@@ -96,12 +91,38 @@ class MA352Platform {
     return accessory;
   }
 
-  setupPower(accessory) {
+  removeStaleAccessories(keepUuid) {
+    const stale = [];
+    for (const [uuid, accessory] of this.accessories.entries()) {
+      if (uuid !== keepUuid) {
+        stale.push(accessory);
+      }
+    }
+    if (stale.length > 0) {
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+      for (const accessory of stale) {
+        this.accessories.delete(accessory.UUID);
+      }
+    }
+  }
+
+  setupTelevision(accessory) {
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
-    const service = accessory.getService(Service.Switch) || accessory.addService(Service.Switch, "MA352 Power");
-    service.getCharacteristic(Characteristic.On)
+    const tvService = accessory.getService(Service.Television) ||
+      accessory.addService(Service.Television, this.deviceName);
+
+    accessory.category = this.api.hap.Categories.TELEVISION;
+    accessory.primaryService = tvService;
+
+    tvService.setCharacteristic(Characteristic.ConfiguredName, this.deviceName);
+    tvService.setCharacteristic(
+      Characteristic.SleepDiscoveryMode,
+      Characteristic.SleepDiscoveryMode.ALWAYS_DISCOVERABLE,
+    );
+
+    tvService.getCharacteristic(Characteristic.Active)
       .onSet(async (value) => {
         const isOn = Boolean(value);
         this.lastKnown.power = isOn;
@@ -113,6 +134,28 @@ class MA352Platform {
         this.lastKnown.power = isOn;
         return isOn;
       });
+
+    if (this.inputMap.size > 0) {
+      this.setupInputs(accessory, tvService);
+      tvService.getCharacteristic(Characteristic.ActiveIdentifier)
+        .onSet(async (value) => {
+          const identifier = Number(value);
+          if (!this.inputMap.has(identifier)) {
+            return;
+          }
+          await this.safeSetInput(identifier);
+          this.lastKnown.input = identifier;
+          tvService.updateCharacteristic(Characteristic.ActiveIdentifier, identifier);
+        })
+        .onGet(async () => {
+          const current = await this.safeGetInput();
+          if (typeof current === "number") {
+            return current;
+          }
+          const first = this.inputMap.keys().next().value;
+          return Number.isInteger(first) ? first : 1;
+        });
+    }
   }
 
   setupMute(accessory) {
@@ -160,50 +203,32 @@ class MA352Platform {
       });
   }
 
-  setupInputs() {
+  setupInputs(accessory, tvService) {
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
+    const validSubtypes = new Set();
     for (const [value, label] of this.inputMap.entries()) {
-      const name = `MA352 Input ${label}`;
-      const key = `ma352-input-${value}`;
-      const accessory = this.getOrCreateAccessory(name, key);
-      const service = accessory.getService(Service.Switch) || accessory.addService(Service.Switch, name);
+      const subtype = `input-${value}`;
+      validSubtypes.add(subtype);
+      const inputService = accessory.getServiceById(Service.InputSource, subtype) ||
+        accessory.addService(Service.InputSource, label, subtype);
 
-      service.getCharacteristic(Characteristic.On)
-        .onSet(async (state) => {
-          if (!state) {
-            return;
-          }
-          await this.safeSetInput(value);
-          this.lastKnown.input = value;
-          this.updateInputSwitches(value);
-        })
-        .onGet(async () => {
-          const current = await this.safeGetInput();
-          this.lastKnown.input = current;
-          return current === value;
-        });
+      inputService.setCharacteristic(Characteristic.Identifier, value);
+      inputService.setCharacteristic(Characteristic.ConfiguredName, label);
+      inputService.setCharacteristic(Characteristic.IsConfigured, Characteristic.IsConfigured.CONFIGURED);
+      inputService.setCharacteristic(Characteristic.InputSourceType, Characteristic.InputSourceType.OTHER);
+
+      tvService.addLinkedService(inputService);
     }
-  }
 
-  updateInputSwitches(selected) {
-    const Service = this.api.hap.Service;
-    const Characteristic = this.api.hap.Characteristic;
-
-    for (const [value, label] of this.inputMap.entries()) {
-      const name = `MA352 Input ${label}`;
-      const key = `ma352-input-${value}`;
-      const uuid = this.api.hap.uuid.generate(key);
-      const accessory = this.accessories.get(uuid);
-      if (!accessory) {
+    for (const service of accessory.services) {
+      if (service.UUID !== Service.InputSource.UUID) {
         continue;
       }
-      const service = accessory.getService(Service.Switch);
-      if (!service) {
-        continue;
+      if (!validSubtypes.has(service.subtype)) {
+        accessory.removeService(service);
       }
-      service.getCharacteristic(Characteristic.On).updateValue(value === selected);
     }
   }
 

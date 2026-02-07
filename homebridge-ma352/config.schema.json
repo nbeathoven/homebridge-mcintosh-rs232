@@ -17,6 +17,12 @@
         "default": 5000,
         "description": "HTTP port for the MA352 bridge service"
       },
+      "name": {
+        "title": "Accessory Name",
+        "type": "string",
+        "default": "McIntosh Amp",
+        "description": "Name of the single accessory shown in Home app"
+      },
       "inputs": {
         "title": "Inputs",
         "type": "array",

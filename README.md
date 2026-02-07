@@ -96,6 +96,7 @@ Homebridge config
 ```json
 {
   "platform": "MA352Platform",
+  "name": "McIntosh Amp",
   "host": "192.168.1.50",
   "port": 5000,
   "inputs": [
@@ -106,6 +107,7 @@ Homebridge config
 }
 ```
 If `inputs` is omitted, the plugin exposes the default 1–9 map.
+The plugin exposes a single accessory with a TV-style input selector, plus mute and a volume slider under the same device.
 
 **Security Note**
 This service is designed for a closed LAN. Do not expose the HTTP port to the public internet.
