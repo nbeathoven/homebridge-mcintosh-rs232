@@ -17,3 +17,4 @@
 - Bumped default app version to 1.0.1.
 - Included max/requested details in volume validation errors.
 - Homebridge volume set now surfaces bridge errors instead of swallowing them.
+- Fixed indentation error in serial loop exception handling.

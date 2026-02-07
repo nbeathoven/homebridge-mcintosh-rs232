@@ -181,8 +181,8 @@ class SerialManager:
             except Exception as exc:
                 logging.exception("Serial loop error: %s", exc)
                 self._record_error("Serial loop error: %s" % exc)
-                    self._close()
-                    self._stop_event.wait(self._reconnect_interval)
+                self._close()
+                self._stop_event.wait(self._reconnect_interval)
 
     def _is_connected(self):
         """Return True if the serial port is open."""
