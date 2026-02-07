@@ -119,27 +119,37 @@ class SerialManager:
 
     def _io_loop(self):
         while not self._stop_event.is_set():
-            if not self._is_connected():
-                if self._connect():
-                    continue
-                time.sleep(self._reconnect_interval)
-                continue
-
-            ser = self._get_serial()
-            if ser is None:
-                time.sleep(0.2)
-                continue
-
             try:
-                line = ser.readline()
-            except SerialException as exc:
-                logging.warning("Serial read failed: %s", exc)
-                self._close()
-                time.sleep(self._reconnect_interval)
-                continue
+                if not self._is_connected():
+                    if self._connect():
+                        continue
+                    self._stop_event.wait(self._reconnect_interval)
+                    continue
 
-            if line:
-                self._dispatch_line(line)
+                ser = self._get_serial()
+                if ser is None:
+                    self._stop_event.wait(0.2)
+                    continue
+
+                try:
+                    line = ser.readline()
+                except SerialException as exc:
+                    logging.warning("Serial read failed: %s", exc)
+                    self._close()
+                    self._stop_event.wait(self._reconnect_interval)
+                    continue
+                except Exception as exc:
+                    logging.exception("Serial read unexpected error: %s", exc)
+                    self._close()
+                    self._stop_event.wait(self._reconnect_interval)
+                    continue
+
+                if line:
+                    self._dispatch_line(line)
+            except Exception as exc:
+                logging.exception("Serial loop error: %s", exc)
+                self._close()
+                self._stop_event.wait(self._reconnect_interval)
 
     def _is_connected(self):
         with self._lock:
@@ -240,7 +250,7 @@ class HoldController:
         while not self._stop_event.is_set():
             try:
                 current = self._get_level()
-                next_level = max(0, min(100, current + step))
+                next_level = max(0, min(50, current + step))
                 short_cmd = build_volume_set("short", next_level)
                 zone_cmd = build_volume_set("zone", next_level)
                 send_with_fallback(short_cmd, zone_cmd)
@@ -305,7 +315,8 @@ class StateCache:
 
     def set_volume(self, level):
         with self._lock:
-            self._volume = int(level)
+            clamped = max(0, min(50, int(level)))
+            self._volume = clamped
             self._updated_at = time.time()
 
     def get_volume(self):
@@ -416,9 +427,10 @@ def build_mute_off(style):
 
 
 def build_volume_set(style, level):
+    clamped = max(0, min(50, int(level)))
     if style == "short":
-        return VOLUME_SET_SHORT.format(level=level)
-    return VOLUME_SET_ZONE.format(zone=command_mode.zone(), level=level)
+        return VOLUME_SET_SHORT.format(level=clamped)
+    return VOLUME_SET_ZONE.format(zone=command_mode.zone(), level=clamped)
 
 
 def build_input_set(style, value):
@@ -496,7 +508,7 @@ def handle_serial_line(raw_line):
             except ValueError:
                 logging.debug("Invalid volume status: %s", text)
                 continue
-            level = max(0, min(100, level))
+            level = max(0, min(50, level))
             state_cache.set_volume(level)
             continue
 
@@ -506,7 +518,7 @@ def handle_serial_line(raw_line):
             except ValueError:
                 logging.debug("Invalid volume status: %s", text)
                 continue
-            level = max(0, min(100, level))
+            level = max(0, min(50, level))
             state_cache.set_volume(level)
             continue
 
@@ -653,8 +665,12 @@ def volume_set():
     try:
         level_int = int(level)
     except (TypeError, ValueError):
-        return jsonify(error="level must be int 0..100"), 400
-    level_int = max(0, min(100, level_int))
+        return jsonify(error="level must be int 0..50"), 400
+    if not (0 <= level_int <= 50):
+        return jsonify(error="level must be int 0..50"), 400
+    current = state_cache.get_volume()
+    if abs(level_int - current) > 10:
+        return jsonify(error="level change must be <= 10"), 400
     try:
         short_cmd = build_volume_set("short", level_int)
         zone_cmd = build_volume_set("zone", level_int)
