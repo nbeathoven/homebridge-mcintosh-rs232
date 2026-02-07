@@ -35,6 +35,8 @@ RECONNECT_INTERVAL = float(os.getenv("RECONNECT_INTERVAL", "2.0"))
 HOLD_INTERVAL = float(os.getenv("HOLD_INTERVAL", "0.12"))
 QUERY_INTERVAL = float(os.getenv("QUERY_INTERVAL", "5.0"))
 QUERY_ON_CONNECT = os.getenv("QUERY_ON_CONNECT", "1") != "0"
+SERIAL_STALE_TIMEOUT = float(os.getenv("SERIAL_STALE_TIMEOUT", "30.0"))
+SERIAL_WATCHDOG_INTERVAL = float(os.getenv("SERIAL_WATCHDOG_INTERVAL", "2.0"))
 COMMAND_STYLE = os.getenv("COMMAND_STYLE", "auto").lower()
 DEFAULT_COMMAND_STYLE = os.getenv("DEFAULT_COMMAND_STYLE", "short").lower()
 COMMAND_ZONE = os.getenv("COMMAND_ZONE", "Z1")
@@ -111,6 +113,10 @@ class SerialManager:
         self._reconnect_interval = reconnect_interval
         self._lock = threading.Lock()
         self._serial = None
+        self._last_rx_time = 0.0
+        self._last_connect_time = 0.0
+        self._last_error_time = 0.0
+        self._last_error = None
         self._stop_event = threading.Event()
         self._line_handler = line_handler
         self._on_connect = on_connect
@@ -135,11 +141,13 @@ class SerialManager:
                     line = ser.readline()
                 except SerialException as exc:
                     logging.warning("Serial read failed: %s", exc)
+                    self._record_error("Serial read failed: %s" % exc)
                     self._close()
                     self._stop_event.wait(self._reconnect_interval)
                     continue
                 except Exception as exc:
                     logging.exception("Serial read unexpected error: %s", exc)
+                    self._record_error("Serial read unexpected error: %s" % exc)
                     self._close()
                     self._stop_event.wait(self._reconnect_interval)
                     continue
@@ -148,6 +156,7 @@ class SerialManager:
                     self._dispatch_line(line)
             except Exception as exc:
                 logging.exception("Serial loop error: %s", exc)
+                self._record_error("Serial loop error: %s" % exc)
                 self._close()
                 self._stop_event.wait(self._reconnect_interval)
 
@@ -160,6 +169,8 @@ class SerialManager:
             return self._serial
 
     def _dispatch_line(self, line):
+        with self._lock:
+            self._last_rx_time = time.time()
         if not self._line_handler:
             return
         try:
@@ -180,10 +191,12 @@ class SerialManager:
             )
         except SerialException as exc:
             logging.warning("Serial connect failed: %s", exc)
+            self._record_error("Serial connect failed: %s" % exc)
             return False
 
         with self._lock:
             self._serial = ser
+            self._last_connect_time = time.time()
         logging.info("Serial connected on %s", self._port)
 
         if self._on_connect:
@@ -198,11 +211,13 @@ class SerialManager:
         with self._lock:
             ser = self._serial
         if ser is None or not ser.is_open:
+            self._record_error("Serial not connected")
             raise SerialException("Serial not connected")
         try:
             ser.write(data)
             ser.flush()
         except SerialException:
+            self._record_error("Serial write failed")
             self._close()
             raise
 
@@ -219,6 +234,57 @@ class SerialManager:
     def stop(self):
         self._stop_event.set()
         self._close()
+
+    def _record_error(self, message):
+        with self._lock:
+            self._last_error_time = time.time()
+            self._last_error = message
+
+    def force_reconnect(self, reason):
+        self._record_error("Forced reconnect: %s" % reason)
+        self._close()
+
+    def health_snapshot(self):
+        with self._lock:
+            connected = self._serial is not None and self._serial.is_open
+            return {
+                "connected": connected,
+                "port": self._port,
+                "baud": self._baud,
+                "last_rx_time": self._last_rx_time,
+                "last_connect_time": self._last_connect_time,
+                "last_error_time": self._last_error_time,
+                "last_error": self._last_error,
+            }
+
+
+class SerialWatchdog:
+    def __init__(self, manager, stale_timeout, interval):
+        self._manager = manager
+        self._stale_timeout = stale_timeout
+        self._interval = interval
+        self._stop_event = threading.Event()
+        self._thread = None
+        if self._stale_timeout > 0:
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+
+    def _loop(self):
+        while not self._stop_event.is_set():
+            snapshot = self._manager.health_snapshot()
+            if snapshot["connected"] and self._stale_timeout > 0:
+                last_rx = snapshot["last_rx_time"]
+                if last_rx > 0:
+                    age = time.time() - last_rx
+                    if age > self._stale_timeout:
+                        logging.warning("Serial stale for %.1fs, forcing reconnect.", age)
+                        self._manager.force_reconnect("stale for %.1fs" % age)
+            self._stop_event.wait(self._interval)
+
+    def stop(self):
+        if not self._thread:
+            return
+        self._stop_event.set()
 
 
 class HoldController:
@@ -570,6 +636,7 @@ serial_manager = SerialManager(
     line_handler=handle_serial_line,
 )
 query_poller = QueryPoller(serial_manager.write, QUERY_INTERVAL, send_immediately=QUERY_ON_CONNECT)
+serial_watchdog = SerialWatchdog(serial_manager, SERIAL_STALE_TIMEOUT, SERIAL_WATCHDOG_INTERVAL)
 
 app = Flask(__name__)
 
@@ -593,6 +660,31 @@ def query_help_lines(timeout=1.0):
 @app.route("/ping", methods=["GET"])
 def ping():
     return jsonify(ok=True)
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    snapshot = serial_manager.health_snapshot()
+    now = time.time()
+    last_rx_time = snapshot["last_rx_time"]
+    last_connect_time = snapshot["last_connect_time"]
+    last_error_time = snapshot["last_error_time"]
+    return jsonify(
+        ok=True,
+        serial_connected=snapshot["connected"],
+        serial_port=snapshot["port"],
+        serial_baud=snapshot["baud"],
+        last_rx_time=last_rx_time or None,
+        last_rx_age_s=(now - last_rx_time) if last_rx_time else None,
+        last_connect_time=last_connect_time or None,
+        last_connect_age_s=(now - last_connect_time) if last_connect_time else None,
+        last_error_time=last_error_time or None,
+        last_error_age_s=(now - last_error_time) if last_error_time else None,
+        last_error=snapshot["last_error"],
+        watchdog_timeout_s=SERIAL_STALE_TIMEOUT,
+        watchdog_interval_s=SERIAL_WATCHDOG_INTERVAL,
+        query_interval_s=QUERY_INTERVAL,
+    )
 
 
 @app.route("/power/on", methods=["POST"])
