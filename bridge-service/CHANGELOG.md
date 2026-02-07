@@ -1,15 +1,22 @@
 # Changelog
 
-## 2026-02-07
+## 2026-02-07 (1.0.8)
 - Added secure bind resolution via `BRIDGE_HOST`/`BRIDGE_INTERFACE`, defaulting to localhost.
 - Added zone-form `HELP`/`QUERY` commands with auto-detect probe and fallback for short vs zone style.
 - Added serial write timeout to prevent hangs and tightened writer thread shutdown via sentinel.
 - Added status-on-connect query with startup state snapshot logging.
+- Added `/hold/start` serial connectivity check to fail fast when disconnected.
+- Documented single-process deployment guidance in `bridge-service/README.md`.
+- Bumped default app version to 1.0.8.
+
+## 2026-02-07 (1.0.7)
 - Added startup volume safety: only apply when not increasing device volume.
 - Added unmute safety fallback volume for high targets.
-- Added `/hold/start` serial connectivity check to fail fast when disconnected.
-- Documented single-process deployment guidance in `README.md`.
-- Bumped default app version to 1.0.8.
+- Added safety toggle and configurable limits via `SAFETY_ENABLED`, `SAFE_UNMUTE_MAX`, `SAFE_UNMUTE_FALLBACK`.
+- Added Raspberry Pi install script (`bridge-service/rpi-install.sh`).
+- Documented Raspberry Pi installer and safety behavior in `README.md`.
+
+## 2026-02-07 (1.0.6 and earlier)
 - Hardened serial I/O loop to recover from unexpected exceptions without dying.
 - Capped volume handling at 50 and enforced max per-request change of 10.
 - Clamped volume values in cache, outbound commands, and inbound status parsing.
