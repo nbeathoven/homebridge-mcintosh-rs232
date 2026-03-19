@@ -5,6 +5,7 @@
 - Made `/health` failure semantics explicit: return HTTP 503 with `ok: false` when the serial runtime is unavailable or the serial device has never opened.
 - Kept `/health` machine-readable on both success and failure with consistent serial, version, last-error, and watchdog/query fields.
 - Added focused health endpoint tests covering success, startup open failure, reconnect, and runtime-missing cases.
+- Updated `rpi-install.sh` to keep the bridge running as the invoking sudo user by default instead of silently switching the service to root.
 - Updated docs for remote procmon monitoring and clarified the preferred `/opt/ma352-bridge` + `/etc/default/ma352-bridge` deployment layout.
 
 ## 2026-02-07 (1.0.8)

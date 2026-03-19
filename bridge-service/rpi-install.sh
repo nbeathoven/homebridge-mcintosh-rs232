@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-/opt/ma352-bridge}"
 SERVICE_NAME="${SERVICE_NAME:-ma352-bridge}"
+SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-}}"
+SERVICE_GROUP="${SERVICE_GROUP:-dialout}"
 ENV_FILE="/etc/default/${SERVICE_NAME}"
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
@@ -51,6 +53,21 @@ After=network.target
 
 [Service]
 Type=simple
+EOF
+
+if [[ -n "${SERVICE_USER}" ]]; then
+  cat >> "${UNIT_FILE}" <<EOF
+User=${SERVICE_USER}
+EOF
+fi
+
+if [[ -n "${SERVICE_GROUP}" ]]; then
+  cat >> "${UNIT_FILE}" <<EOF
+Group=${SERVICE_GROUP}
+EOF
+fi
+
+cat >> "${UNIT_FILE}" <<EOF
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/app.py
 Restart=on-failure

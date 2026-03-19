@@ -58,6 +58,7 @@ sudo ./rpi-install.sh
 ```
 This installs to `/opt/ma352-bridge`, creates a venv, installs requirements, writes a systemd unit, enables it, and starts it.
 You can override device-specific settings in `/etc/default/ma352-bridge`.
+By default, the installer keeps the service running as the invoking `sudo` user and `dialout` group; override with `SERVICE_USER`/`SERVICE_GROUP` if needed.
 Set `SAFETY_ENABLED=0` there to disable the safety logic.
 
 **Environment**
