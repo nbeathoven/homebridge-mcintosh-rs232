@@ -6,6 +6,8 @@ const DEVICE_VOLUME_MAX = 50;
 const HOMEKIT_VOLUME_MAX = 100;
 const VOLUME_RAMP_STEP = 5;
 const VOLUME_RAMP_DELAY_MS = 1000;
+const REQUEST_TIMEOUT_MS = 2000;
+const READ_TIMEOUT_MS = 3500;
 
 class MA352Platform {
   constructor(log, config, api) {
@@ -290,24 +292,24 @@ class MA352Platform {
 
   async safeGetVolume() {
     try {
-      const res = await this.request("/volume");
+      const res = await this.request("/volume", { timeoutMs: READ_TIMEOUT_MS });
       const data = await res.json();
       if (typeof data.level === "number") {
         return this.normalizeDeviceVolume(data.level);
       }
     } catch (err) {
-      this.log.warn(`Volume read failed: ${err.message || err}`);
+      this.logReadFailure("Volume", err);
     }
 
     try {
-      const res = await this.request("/volume/lvl");
+      const res = await this.request("/volume/lvl", { timeoutMs: READ_TIMEOUT_MS });
       const text = await res.text();
       const level = Number(text.trim());
       if (!Number.isNaN(level)) {
         return this.normalizeDeviceVolume(level);
       }
     } catch (err) {
-      this.log.warn(`Volume fallback read failed: ${err.message || err}`);
+      this.logReadFailure("Volume fallback", err);
     }
 
     return this.getLastKnownDeviceVolume();
@@ -333,13 +335,13 @@ class MA352Platform {
 
   async safeGetMute() {
     try {
-      const res = await this.request("/mute");
+      const res = await this.request("/mute", { timeoutMs: READ_TIMEOUT_MS });
       const data = await res.json();
       if (typeof data.muted === "boolean") {
         return data.muted;
       }
     } catch (err) {
-      this.log.warn(`Mute read failed: ${err.message || err}`);
+      this.logReadFailure("Mute", err);
     }
 
     return this.lastKnown.mute;
@@ -347,13 +349,13 @@ class MA352Platform {
 
   async safeGetPower() {
     try {
-      const res = await this.request("/power");
+      const res = await this.request("/power", { timeoutMs: READ_TIMEOUT_MS });
       const data = await res.json();
       if (typeof data.on === "boolean") {
         return data.on;
       }
     } catch (err) {
-      this.log.warn(`Power read failed: ${err.message || err}`);
+      this.logReadFailure("Power", err);
     }
 
     return this.lastKnown.power;
@@ -361,7 +363,7 @@ class MA352Platform {
 
   async safeGetInput() {
     try {
-      const res = await this.request("/input");
+      const res = await this.request("/input", { timeoutMs: READ_TIMEOUT_MS });
       const data = await res.json();
       if (typeof data.value === "number") {
         const value = Math.round(Number(data.value));
@@ -370,7 +372,7 @@ class MA352Platform {
         }
       }
     } catch (err) {
-      this.log.warn(`Input read failed: ${err.message || err}`);
+      this.logReadFailure("Input", err);
     }
 
     return this.lastKnown.input;
@@ -392,13 +394,29 @@ class MA352Platform {
     }
   }
 
+  logReadFailure(label, err) {
+    if (this.isAbortError(err)) {
+      this.log.debug?.(`${label} read timed out; keeping last known value.`);
+      return;
+    }
+    this.log.warn(`${label} read failed: ${err.message || err}`);
+  }
+
+  isAbortError(err) {
+    if (!err) {
+      return false;
+    }
+    return err.name === "AbortError" || err.message === "This operation was aborted";
+  }
+
   async request(path, options = {}) {
+    const { timeoutMs = REQUEST_TIMEOUT_MS, ...fetchOptions } = options;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
-        ...options,
+        ...fetchOptions,
         signal: controller.signal,
       });
     } finally {
