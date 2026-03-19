@@ -159,7 +159,8 @@ Homebridge config
 ```
 If `inputs` is omitted, the plugin exposes the default 1–9 map.
 The plugin exposes a single accessory with a TV-style input selector, plus mute and a volume slider under the same device.
-The volume slider is capped at 0–50 and ramps upward in +5 steps to match the bridge queue behavior.
+HomeKit sees the volume slider as a normal 0–100 percentage, and the plugin maps that to the bridge's 0–50 device range.
+Upward changes still ramp in +5 device-volume steps to match the bridge queue behavior.
 
 **Security Note**
 This service is designed for a closed LAN. Do not expose the HTTP port to the public internet.

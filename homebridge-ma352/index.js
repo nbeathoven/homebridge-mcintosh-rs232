@@ -2,7 +2,8 @@
 
 const PLUGIN_NAME = "homebridge-ma352";
 const PLATFORM_NAME = "MA352Platform";
-const VOLUME_MAX = 50;
+const DEVICE_VOLUME_MAX = 50;
+const HOMEKIT_VOLUME_MAX = 100;
 const VOLUME_RAMP_STEP = 5;
 const VOLUME_RAMP_DELAY_MS = 1000;
 
@@ -195,10 +196,10 @@ class MA352Platform {
         return true;
       });
     service.getCharacteristic(Characteristic.Brightness)
-      .setProps({ minValue: 0, maxValue: VOLUME_MAX, minStep: 1 })
+      .setProps({ minValue: 0, maxValue: HOMEKIT_VOLUME_MAX, minStep: 1 })
       .onSet(async (value) => {
-        const requested = Math.max(0, Math.min(VOLUME_MAX, Math.round(Number(value))));
-        const current = Number.isFinite(this.lastKnown.volume) ? this.lastKnown.volume : 0;
+        const requested = this.homekitToDeviceVolume(value);
+        const current = this.getLastKnownDeviceVolume();
         this.stopVolumeRamp();
         try {
           await this.request(`/volume/set?level=${requested}`, { method: "POST" });
@@ -213,12 +214,12 @@ class MA352Platform {
         }
 
         this.lastKnown.volume = requested;
-        service.updateCharacteristic(Characteristic.Brightness, requested);
+        service.updateCharacteristic(Characteristic.Brightness, this.deviceToHomekitVolume(requested));
       })
       .onGet(async () => {
         const level = await this.safeGetVolume();
         this.lastKnown.volume = level;
-        return level;
+        return this.deviceToHomekitVolume(level);
       });
   }
 
@@ -256,14 +257,17 @@ class MA352Platform {
     this.volumeRampTarget = target;
 
     const tick = () => {
-      const current = Number.isFinite(this.lastKnown.volume) ? this.lastKnown.volume : 0;
+      const current = this.getLastKnownDeviceVolume();
       if (current >= target) {
         this.volumeRampTimer = null;
         return;
       }
       const next = Math.min(target, current + VOLUME_RAMP_STEP);
       this.lastKnown.volume = next;
-      service.updateCharacteristic(this.api.hap.Characteristic.Brightness, next);
+      service.updateCharacteristic(
+        this.api.hap.Characteristic.Brightness,
+        this.deviceToHomekitVolume(next),
+      );
       if (next < target) {
         this.volumeRampTimer = setTimeout(tick, VOLUME_RAMP_DELAY_MS);
       } else {
@@ -289,7 +293,7 @@ class MA352Platform {
       const res = await this.request("/volume");
       const data = await res.json();
       if (typeof data.level === "number") {
-        return Math.max(0, Math.min(VOLUME_MAX, Math.round(data.level)));
+        return this.normalizeDeviceVolume(data.level);
       }
     } catch (err) {
       this.log.warn(`Volume read failed: ${err.message || err}`);
@@ -300,13 +304,31 @@ class MA352Platform {
       const text = await res.text();
       const level = Number(text.trim());
       if (!Number.isNaN(level)) {
-        return Math.max(0, Math.min(VOLUME_MAX, Math.round(level)));
+        return this.normalizeDeviceVolume(level);
       }
     } catch (err) {
       this.log.warn(`Volume fallback read failed: ${err.message || err}`);
     }
 
-    return this.lastKnown.volume || 0;
+    return this.getLastKnownDeviceVolume();
+  }
+
+  normalizeDeviceVolume(value) {
+    return Math.max(0, Math.min(DEVICE_VOLUME_MAX, Math.round(Number(value))));
+  }
+
+  getLastKnownDeviceVolume() {
+    return Number.isFinite(this.lastKnown.volume) ? this.lastKnown.volume : 0;
+  }
+
+  homekitToDeviceVolume(value) {
+    const homekitValue = Math.max(0, Math.min(HOMEKIT_VOLUME_MAX, Math.round(Number(value))));
+    return Math.round((homekitValue / HOMEKIT_VOLUME_MAX) * DEVICE_VOLUME_MAX);
+  }
+
+  deviceToHomekitVolume(value) {
+    const deviceValue = this.normalizeDeviceVolume(value);
+    return Math.round((deviceValue / DEVICE_VOLUME_MAX) * HOMEKIT_VOLUME_MAX);
   }
 
   async safeGetMute() {
