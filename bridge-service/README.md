@@ -13,3 +13,9 @@ This service owns a physical serial device and is designed for a single process.
 **Environment**
 Key environment variables are managed via `/etc/default/ma352-bridge` when you use `rpi-install.sh`.
 Common settings include `BRIDGE_HOST`, `BRIDGE_INTERFACE`, `BRIDGE_PORT`, and serial parameters.
+
+**Remote Monitoring**
+- Use `GET /ping` for lightweight HTTP liveness.
+- Use `GET /health` for machine-readable service and serial state.
+- For monitoring from another host, bind the bridge to the LAN with `BRIDGE_HOST=0.0.0.0` or `BRIDGE_INTERFACE=<lan-iface>`.
+- Keep service restarts out of the bridge API. Restart `ma352-bridge` out-of-band with systemd on the MA352 host.

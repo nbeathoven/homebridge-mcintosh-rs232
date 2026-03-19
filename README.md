@@ -11,6 +11,7 @@ This repo contains a Python bridge service for the McIntosh MA‑352 RS‑232 po
 **Structure**
 - `bridge-service/` Python HTTP bridge service
 - `homebridge-ma352/` Homebridge platform plugin
+- `android-app/` Android 10+ tablet controller app (McIntosh-inspired UI)
 - `bridge-service/systemd/ma352-bridge.service` sample systemd unit
 
 **Hardware Notes**
@@ -62,9 +63,10 @@ Set `SAFETY_ENABLED=0` there to disable the safety logic.
 **Environment**
 - `SERIAL_PORT` (default `/dev/ttyUSB0`)
 - `SERIAL_BAUD` (default `115200`)
-- `BRIDGE_HOST` (default `0.0.0.0`)
+- `BRIDGE_HOST` (default unset; secure bind resolves to `127.0.0.1` unless `BRIDGE_INTERFACE` is set)
+- `BRIDGE_INTERFACE` (optional; bind to the IPv4 address of a specific LAN interface such as `eth0`)
 - `BRIDGE_PORT` (default `5000`)
-- `BRIDGE_VERSION` (default `1.0.2`; reported by `/health` and `/`)
+- `BRIDGE_VERSION` (default `1.0.9`; reported by `/health` and `/`)
 - `HOLD_INTERVAL` (default `0.12` seconds)
 - `QUERY_INTERVAL` (default `5.0` seconds; set `0` to disable polling)
 - `QUERY_ON_CONNECT` (default `1`; set `0` to wait for the first poll interval)
@@ -106,8 +108,15 @@ The bridge supports both short‑form commands (e.g., `PWR`, `VOL`) and zone‑f
 - `GET /firmware` (derived from `QRY`/`HLP`)
 
 **Health & Diagnostics**
-- `GET /health` returns serial connection status, last RX times, and version.
+- `GET /health` returns a stable machine-readable payload with `ok`, `service`, `version`, serial status, `last_error`, and watchdog/query timing fields.
+- `GET /health` returns HTTP `503` with `ok: false` if the serial runtime is unavailable or the serial device has never opened; otherwise it returns HTTP `200` with `ok: true` and `serial_connected` reporting the live link state.
 - Invalid command warnings include recent outbound commands for correlation.
+
+**Remote Monitoring With Procmon**
+- Point procmon at `http://<ma352-host>:5000/health` for the MA352 bridge health check.
+- Keep `GET /ping` as the lightweight HTTP liveness probe when you only need to know whether the bridge process is answering.
+- If procmon runs on another host, bind the bridge to the LAN with `BRIDGE_HOST=0.0.0.0` or `BRIDGE_INTERFACE=<lan-iface>` in `/etc/default/ma352-bridge`.
+- Keep service restart out of the bridge HTTP API. Use SSH and systemd on the MA352 host instead, for example `ssh nima@<ma352-host> sudo systemctl restart ma352-bridge`.
 
 **Test Commands**
 ```bash

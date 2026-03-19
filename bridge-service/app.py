@@ -77,7 +77,8 @@ def resolve_app_host():
 
 APP_HOST = resolve_app_host()
 APP_PORT = int(os.getenv("BRIDGE_PORT", "5000"))
-APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.8")
+APP_VERSION = os.getenv("BRIDGE_VERSION", "1.0.9")
+SERVICE_NAME = "ma352-bridge"
 
 SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyUSB0")
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "115200"))
@@ -1418,6 +1419,48 @@ def get_volume_ramp_controller():
     return volume_ramp_controller
 
 
+def _age_or_none(timestamp, now):
+    """Return elapsed seconds for a timestamp or None when unavailable."""
+    if not timestamp:
+        return None
+    return now - timestamp
+
+
+def _health_payload(snapshot=None, ok=True, last_error=None):
+    """Build a stable, machine-readable health response payload."""
+    snapshot = snapshot or {}
+    now = time.time()
+    last_rx_time = snapshot.get("last_rx_time") or None
+    last_connect_time = snapshot.get("last_connect_time") or None
+    last_error_time = snapshot.get("last_error_time") or None
+    payload_last_error = last_error if last_error is not None else snapshot.get("last_error")
+    return {
+        "ok": ok,
+        "service": SERVICE_NAME,
+        "version": APP_VERSION,
+        "serial_connected": bool(snapshot.get("connected", False)),
+        "serial_port": snapshot.get("port", SERIAL_PORT),
+        "serial_baud": snapshot.get("baud", SERIAL_BAUD),
+        "last_error": payload_last_error,
+        "last_rx_time": last_rx_time,
+        "last_rx_age_s": _age_or_none(last_rx_time, now),
+        "last_connect_time": last_connect_time,
+        "last_connect_age_s": _age_or_none(last_connect_time, now),
+        "last_error_time": last_error_time,
+        "last_error_age_s": _age_or_none(last_error_time, now),
+        "watchdog_timeout_s": SERIAL_STALE_TIMEOUT,
+        "watchdog_interval_s": SERIAL_WATCHDOG_INTERVAL,
+        "query_interval_s": QUERY_INTERVAL,
+    }
+
+
+def _serial_open_failed(snapshot):
+    """Return True when the bridge has not opened the serial device yet."""
+    if snapshot.get("connected"):
+        return False
+    return not snapshot.get("last_connect_time") and bool(snapshot.get("last_error"))
+
+
 # Flask app + HTTP routes
 app = Flask(__name__)
 
@@ -1463,29 +1506,11 @@ def health():
     try:
         manager = get_serial_manager()
     except SerialException as exc:
-        return jsonify(ok=False, error=str(exc)), 503
+        return jsonify(_health_payload(ok=False, last_error=str(exc))), 503
     snapshot = manager.health_snapshot()
-    now = time.time()
-    last_rx_time = snapshot["last_rx_time"]
-    last_connect_time = snapshot["last_connect_time"]
-    last_error_time = snapshot["last_error_time"]
-    return jsonify(
-        ok=True,
-        version=APP_VERSION,
-        serial_connected=snapshot["connected"],
-        serial_port=snapshot["port"],
-        serial_baud=snapshot["baud"],
-        last_rx_time=last_rx_time or None,
-        last_rx_age_s=(now - last_rx_time) if last_rx_time else None,
-        last_connect_time=last_connect_time or None,
-        last_connect_age_s=(now - last_connect_time) if last_connect_time else None,
-        last_error_time=last_error_time or None,
-        last_error_age_s=(now - last_error_time) if last_error_time else None,
-        last_error=snapshot["last_error"],
-        watchdog_timeout_s=SERIAL_STALE_TIMEOUT,
-        watchdog_interval_s=SERIAL_WATCHDOG_INTERVAL,
-        query_interval_s=QUERY_INTERVAL,
-    )
+    if _serial_open_failed(snapshot):
+        return jsonify(_health_payload(snapshot, ok=False)), 503
+    return jsonify(_health_payload(snapshot))
 
 
 # Power endpoints
@@ -1739,7 +1764,7 @@ def hold_stop():
 def root():
     """Return a minimal service identity payload."""
     return Response(
-        json.dumps({"ok": True, "service": "ma352-bridge", "version": APP_VERSION}),
+        json.dumps({"ok": True, "service": SERVICE_NAME, "version": APP_VERSION}),
         mimetype="application/json",
     )
 

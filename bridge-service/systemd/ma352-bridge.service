@@ -5,16 +5,10 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/ma352-bridge
-ExecStart=/usr/bin/python3 /opt/ma352-bridge/app.py
+ExecStart=/opt/ma352-bridge/.venv/bin/python /opt/ma352-bridge/app.py
 Restart=on-failure
 RestartSec=2
-Environment=BRIDGE_HOST=0.0.0.0
-Environment=BRIDGE_PORT=5000
-Environment=SERIAL_PORT=/dev/ttyUSB0
-Environment=SERIAL_BAUD=115200
-Environment=HOLD_INTERVAL=0.12
-Environment=QUERY_INTERVAL=5.0
-Environment=QUERY_ON_CONNECT=1
+EnvironmentFile=-/etc/default/ma352-bridge
 
 [Install]
 WantedBy=multi-user.target

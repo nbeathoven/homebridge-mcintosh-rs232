@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-03-18 (1.0.9)
+- Added stable `service: "ma352-bridge"` to `/health` responses for remote monitoring.
+- Made `/health` failure semantics explicit: return HTTP 503 with `ok: false` when the serial runtime is unavailable or the serial device has never opened.
+- Kept `/health` machine-readable on both success and failure with consistent serial, version, last-error, and watchdog/query fields.
+- Added focused health endpoint tests covering success, startup open failure, reconnect, and runtime-missing cases.
+- Updated docs for remote procmon monitoring and clarified the preferred `/opt/ma352-bridge` + `/etc/default/ma352-bridge` deployment layout.
+
 ## 2026-02-07 (1.0.8)
 - Added secure bind resolution via `BRIDGE_HOST`/`BRIDGE_INTERFACE`, defaulting to localhost.
 - Added zone-form `HELP`/`QUERY` commands with auto-detect probe and fallback for short vs zone style.
