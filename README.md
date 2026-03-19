@@ -163,3 +163,8 @@ The volume slider is capped at 0–50 and ramps upward in +5 steps to match the 
 
 **Security Note**
 This service is designed for a closed LAN. Do not expose the HTTP port to the public internet.
+
+**Release History**
+- GitHub Releases for this repo track bridge-service versions with tags like `bridge-service-v1.0.9`.
+- The Homebridge plugin keeps its own npm package version in `homebridge-ma352/package.json`.
+- `bridge-service/CHANGELOG.md` is the source of truth for bridge release notes, and GitHub Releases should mirror those entries.

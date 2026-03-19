@@ -7,6 +7,7 @@
 - Added focused health endpoint tests covering success, startup open failure, reconnect, and runtime-missing cases.
 - Updated `rpi-install.sh` to keep the bridge running as the invoking sudo user by default instead of silently switching the service to root.
 - Updated docs for remote procmon monitoring and clarified the preferred `/opt/ma352-bridge` + `/etc/default/ma352-bridge` deployment layout.
+- Established the GitHub release convention for bridge versions as `bridge-service-vX.Y.Z`.
 
 ## 2026-02-07 (1.0.8)
 - Added secure bind resolution via `BRIDGE_HOST`/`BRIDGE_INTERFACE`, defaulting to localhost.
