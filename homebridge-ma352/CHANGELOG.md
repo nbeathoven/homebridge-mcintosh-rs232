@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-03-19
+### Changed
+- Expanded the Homebridge version range to explicitly allow the `2.0.0-beta` series as well as stable `1.x` releases.
+- This fixes npm peer dependency resolution failures when installing on Homebridge `2.0.0-beta.78`.
+
+## [1.0.4] - 2026-03-19
+### Changed
+- Added standard npm metadata for homepage, repository subdirectory, publish config, and display name.
+- Added a package-scoped README so npm and Homebridge users see install and configuration guidance directly on the package page.
+- Declared Homebridge as a peer dependency and prepared the package for public npm publishing.
+
 ## [1.0.3] - 2026-03-19
 ### Changed
 - Increased read request timeout tolerance for power, mute, input, and volume polling.

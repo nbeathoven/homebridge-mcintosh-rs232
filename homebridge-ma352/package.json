@@ -1,8 +1,31 @@
 {
   "name": "homebridge-ma352",
-  "version": "1.0.3",
+  "version": "1.0.5",
+  "displayName": "McIntosh MA352",
   "description": "Homebridge platform plugin for McIntosh MA-352 via local RS-232 bridge",
   "main": "index.js",
+  "author": {
+    "name": "nbeathoven",
+    "url": "https://github.com/nbeathoven"
+  },
+  "homepage": "https://github.com/nbeathoven/homebridge-mcintosh-rs232#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nbeathoven/homebridge-mcintosh-rs232.git",
+    "directory": "homebridge-ma352"
+  },
+  "bugs": {
+    "url": "https://github.com/nbeathoven/homebridge-mcintosh-rs232/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "CHANGELOG.md",
+    "README.md",
+    "config.schema.json",
+    "index.js"
+  ],
   "keywords": [
     "homebridge-plugin",
     "homebridge",
@@ -12,7 +35,10 @@
   ],
   "engines": {
     "node": ">=18.0.0",
-    "homebridge": ">=1.6.0"
+    "homebridge": ">=1.6.0 || ^2.0.0-beta.0"
+  },
+  "peerDependencies": {
+    "homebridge": ">=1.6.0 || ^2.0.0-beta.0"
   },
   "homebridge": {
     "platforms": [
