@@ -11,7 +11,6 @@ This repo contains a Python bridge service for the McIntosh MA‑352 RS‑232 po
 **Structure**
 - `bridge-service/` Python HTTP bridge service
 - `homebridge-ma352/` Homebridge platform plugin
-- `android-app/` Android 10+ tablet controller app (McIntosh-inspired UI)
 - `bridge-service/systemd/ma352-bridge.service` sample systemd unit
 
 **Hardware Notes**
@@ -136,12 +135,23 @@ curl "http://127.0.0.1:5000/firmware?timeout=1.5"
 
 **Homebridge Plugin**
 
-Install as local tarball
+Install from npm
+```bash
+npm install -g homebridge-ma352
+```
+
+In Homebridge UI, search for `homebridge-ma352` from the Plugins screen and install it there.
+
+Local tarball install is still useful for development, but it is no longer the normal install path:
 ```bash
 cd homebridge-ma352
 npm pack
 ```
-This produces a `.tgz` file. In Homebridge UI, install the plugin from a local tarball and select the generated file.
+
+Compatibility
+- Node.js `18+`
+- Homebridge `>=1.6.0`
+- Homebridge `2.0.0-beta` supported
 
 Homebridge config
 ```json
@@ -167,5 +177,7 @@ This service is designed for a closed LAN. Do not expose the HTTP port to the pu
 
 **Release History**
 - GitHub Releases for this repo track bridge-service versions with tags like `bridge-service-v1.0.9`.
-- The Homebridge plugin keeps its own npm package version in `homebridge-ma352/package.json`.
+- The Homebridge plugin is published separately to npm as `homebridge-ma352`.
+- Homebridge plugin release tags use `homebridge-ma352-vX.Y.Z` and publish through `.github/workflows/publish.yml`.
 - `bridge-service/CHANGELOG.md` is the source of truth for bridge release notes, and GitHub Releases should mirror those entries.
+- `homebridge-ma352/CHANGELOG.md` is the source of truth for plugin release notes.
