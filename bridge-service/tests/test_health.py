@@ -120,6 +120,29 @@ class HealthEndpointTests(unittest.TestCase):
         self.assertEqual(payload["serial_connected"], False)
         self.assertEqual(payload["last_error"], "Forced reconnect: stale for 35.0s")
 
+    def test_health_sets_default_last_error_when_transport_is_disconnected_without_detail(self):
+        manager = FakeManager(
+            {
+                "connected": False,
+                "port": "/dev/ttyUSB0",
+                "baud": 115200,
+                "last_rx_time": 110.0,
+                "last_connect_time": 100.0,
+                "last_error_time": 0.0,
+                "last_error": None,
+            }
+        )
+        with patch.object(bridge_app, "get_serial_manager", return_value=manager):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 503)
+        payload = response.get_json()
+        self.assertEqual(payload["ok"], False)
+        self.assertEqual(payload["alive"], True)
+        self.assertEqual(payload["ready"], False)
+        self.assertEqual(payload["serial_connected"], False)
+        self.assertEqual(payload["last_error"], "Serial transport not connected")
+
 
 if __name__ == "__main__":
     unittest.main()
