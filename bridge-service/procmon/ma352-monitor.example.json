@@ -1,0 +1,46 @@
+{
+  "id": "ma352",
+  "name": "MA352 Bridge",
+  "type": "systemd-service",
+  "enabled": true,
+  "interval": "1m",
+  "failure_threshold": 1,
+  "cooldown": "15m",
+  "target": {
+    "transport": "local"
+  },
+  "metadata": {
+    "service_name": "ma352-bridge"
+  },
+  "checks": [
+    {
+      "id": "ma352-service-active",
+      "type": "systemd_service",
+      "service": "ma352-bridge"
+    },
+    {
+      "id": "ma352-health",
+      "type": "http_json",
+      "url": "http://127.0.0.1:5000/health",
+      "timeout": "3s",
+      "require_ok": true,
+      "require_serial_connected": true
+    }
+  ],
+  "recovery": [
+    {
+      "name": "restart-ma352-bridge",
+      "type": "restart_systemd_service",
+      "service": "ma352-bridge"
+    },
+    {
+      "name": "wait-after-restart",
+      "type": "sleep",
+      "duration": "10s"
+    },
+    {
+      "name": "recheck-after-restart",
+      "type": "recheck"
+    }
+  ]
+}

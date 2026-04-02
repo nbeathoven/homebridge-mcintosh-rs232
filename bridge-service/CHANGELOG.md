@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-02 (1.0.10)
+- Standardized `/ping` as lightweight liveness-only JSON and `/health` as the procmon-facing readiness contract.
+- Added explicit `alive` and `ready` fields to `/health`, while keeping stable machine-readable fields for `service`, `version`, serial status, `last_error`, and watchdog/query timing.
+- Tightened `/health` semantics so any serial disconnect now returns HTTP `503` with `ok: false`, `ready: false`, and a concrete `last_error`.
+- Added bind/listen metadata to `/health` so remote operators can confirm the active HTTP address and port.
+- Changed new installer defaults to local-only bind, with explicit LAN-binding guidance for remote procmon use.
+- Updated the sample systemd unit to wait for `network-online.target`, which is safer when binding by interface name.
+- Added a canonical procmon monitor example for `ma352-bridge`.
+- Expanded endpoint tests to cover liveness payload shape and unhealthy disconnected states.
+
 ## 2026-03-18 (1.0.9)
 - Added stable `service: "ma352-bridge"` to `/health` responses for remote monitoring.
 - Made `/health` failure semantics explicit: return HTTP 503 with `ok: false` when the serial runtime is unavailable or the serial device has never opened.

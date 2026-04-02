@@ -17,6 +17,12 @@ class HealthEndpointTests(unittest.TestCase):
     def setUp(self):
         self.client = bridge_app.app.test_client()
 
+    def test_ping_is_lightweight_liveness_only(self):
+        response = self.client.get("/ping")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"alive": True})
+
     def test_health_reports_machine_readable_monitoring_fields(self):
         manager = FakeManager(
             {
@@ -35,12 +41,16 @@ class HealthEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["alive"], True)
+        self.assertEqual(payload["ready"], True)
         self.assertEqual(payload["service"], "ma352-bridge")
         self.assertEqual(payload["version"], bridge_app.APP_VERSION)
         self.assertEqual(payload["serial_connected"], True)
         self.assertEqual(payload["serial_port"], "/dev/ttyUSB0")
         self.assertEqual(payload["serial_baud"], 115200)
         self.assertEqual(payload["last_error"], "older warning")
+        self.assertEqual(payload["bind_host"], bridge_app.APP_HOST)
+        self.assertEqual(payload["listen_port"], bridge_app.APP_PORT)
         self.assertIn("watchdog_timeout_s", payload)
         self.assertIn("watchdog_interval_s", payload)
         self.assertIn("query_interval_s", payload)
@@ -56,6 +66,8 @@ class HealthEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         payload = response.get_json()
         self.assertEqual(payload["ok"], False)
+        self.assertEqual(payload["alive"], True)
+        self.assertEqual(payload["ready"], False)
         self.assertEqual(payload["service"], "ma352-bridge")
         self.assertEqual(payload["serial_connected"], False)
         self.assertEqual(payload["serial_port"], bridge_app.SERIAL_PORT)
@@ -80,10 +92,12 @@ class HealthEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         payload = response.get_json()
         self.assertEqual(payload["ok"], False)
+        self.assertEqual(payload["alive"], True)
+        self.assertEqual(payload["ready"], False)
         self.assertEqual(payload["serial_connected"], False)
         self.assertEqual(payload["last_error"], "Serial connect failed: no such file")
 
-    def test_health_returns_200_when_reconnecting_after_prior_connect(self):
+    def test_health_returns_503_when_transport_is_disconnected_after_prior_connect(self):
         manager = FakeManager(
             {
                 "connected": False,
@@ -98,9 +112,11 @@ class HealthEndpointTests(unittest.TestCase):
         with patch.object(bridge_app, "get_serial_manager", return_value=manager):
             response = self.client.get("/health")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 503)
         payload = response.get_json()
-        self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["ok"], False)
+        self.assertEqual(payload["alive"], True)
+        self.assertEqual(payload["ready"], False)
         self.assertEqual(payload["serial_connected"], False)
         self.assertEqual(payload["last_error"], "Forced reconnect: stale for 35.0s")
 

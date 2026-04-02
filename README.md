@@ -66,7 +66,7 @@ Set `SAFETY_ENABLED=0` there to disable the safety logic.
 - `BRIDGE_HOST` (default unset; secure bind resolves to `127.0.0.1` unless `BRIDGE_INTERFACE` is set)
 - `BRIDGE_INTERFACE` (optional; bind to the IPv4 address of a specific LAN interface such as `eth0`)
 - `BRIDGE_PORT` (default `5000`)
-- `BRIDGE_VERSION` (default `1.0.9`; reported by `/health` and `/`)
+- `BRIDGE_VERSION` (default `1.0.10`; reported by `/health` and `/`)
 - `HOLD_INTERVAL` (default `0.12` seconds)
 - `QUERY_INTERVAL` (default `5.0` seconds; set `0` to disable polling)
 - `QUERY_ON_CONNECT` (default `1`; set `0` to wait for the first poll interval)
@@ -97,7 +97,7 @@ The bridge supports both short‑form commands (e.g., `PWR`, `VOL`) and zone‑f
 
 **HTTP API**
 - `GET /ping`
-- `GET /health` (serial status, version, watchdog info)
+- `GET /health` (procmon-facing readiness, serial status, version, watchdog info)
 - `POST /power/on`, `POST /power/off`, `GET /power`
 - `POST /mute/on`, `POST /mute/off`, `GET /mute`
 - `POST /volume/set?level=NN`, `GET /volume`, `GET /volume/lvl`
@@ -108,15 +108,31 @@ The bridge supports both short‑form commands (e.g., `PWR`, `VOL`) and zone‑f
 - `GET /firmware` (derived from `QRY`/`HLP`)
 
 **Health & Diagnostics**
-- `GET /health` returns a stable machine-readable payload with `ok`, `service`, `version`, serial status, `last_error`, and watchdog/query timing fields.
-- `GET /health` returns HTTP `503` with `ok: false` if the serial runtime is unavailable or the serial device has never opened; otherwise it returns HTTP `200` with `ok: true` and `serial_connected` reporting the live link state.
+- `GET /ping` is liveness only. It returns a minimal `{"alive": true}` when the process is answering HTTP.
+- `GET /health` is the readiness signal for procmon. It returns stable machine-readable JSON with at least `ok`, `alive`, `ready`, `service`, `version`, `serial_connected`, `serial_port`, `serial_baud`, `last_error`, and watchdog/query timing fields.
+- `GET /health` returns HTTP `200` only when the bridge is operational enough for control traffic: the process is alive and the serial transport is connected.
+- `GET /health` returns HTTP `503` with `alive: true`, `ready: false`, `ok: false`, and `serial_connected: false` when the process is up but serial transport is unavailable or disconnected.
+- Procmon should trust `/health` as readiness and should not infer bridge readiness from process liveness alone.
 - Invalid command warnings include recent outbound commands for correlation.
 
 **Remote Monitoring With Procmon**
-- Point procmon at `http://<ma352-host>:5000/health` for the MA352 bridge health check.
+- Service name: `ma352-bridge`
+- Default port: `5000`
+- Procmon health URL: `http://<ma352-host>:5000/health`
+- Standard procmon checks:
+  - `systemd_service` for `ma352-bridge`
+  - `http_json` with `require_ok: true`
+  - `http_json` with `require_serial_connected: true`
+- Standard procmon recovery:
+  - `restart_systemd_service`
+  - `sleep`
+  - `recheck`
 - Keep `GET /ping` as the lightweight HTTP liveness probe when you only need to know whether the bridge process is answering.
-- If procmon runs on another host, bind the bridge to the LAN with `BRIDGE_HOST=0.0.0.0` or `BRIDGE_INTERFACE=<lan-iface>` in `/etc/default/ma352-bridge`.
-- Keep service restart out of the bridge HTTP API. Use SSH and systemd on the MA352 host instead, for example `ssh nima@<ma352-host> sudo systemctl restart ma352-bridge`.
+- Use `GET /health` as the readiness signal when procmon must know whether the amp is actually reachable over serial.
+- New installs default to local-only bind. To allow procmon on another host, set `BRIDGE_HOST=0.0.0.0` or `BRIDGE_INTERFACE=<lan-iface>` in `/etc/default/ma352-bridge`.
+- For local-only operation, leave `BRIDGE_HOST` unset so the app binds to `127.0.0.1`.
+- Restart the service externally through SSH and systemd on the MA352 host. Do not add or use an HTTP restart endpoint.
+- A canonical procmon monitor snippet is included at `bridge-service/procmon/ma352-monitor.example.json`.
 
 **Test Commands**
 ```bash

@@ -33,7 +33,10 @@ python3 -m venv "${INSTALL_DIR}/.venv"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   cat > "${ENV_FILE}" <<'EOF'
-BRIDGE_HOST=0.0.0.0
+# Default is local-only bind. For remote procmon or other LAN clients, set
+# either BRIDGE_HOST=0.0.0.0 or BRIDGE_INTERFACE=<lan-iface>.
+# BRIDGE_HOST=0.0.0.0
+# BRIDGE_INTERFACE=eth0
 BRIDGE_PORT=5000
 SERIAL_PORT=/dev/ttyUSB0
 SERIAL_BAUD=115200
@@ -49,7 +52,8 @@ fi
 cat > "${UNIT_FILE}" <<EOF
 [Unit]
 Description=MA-352 RS-232 Bridge Service
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
