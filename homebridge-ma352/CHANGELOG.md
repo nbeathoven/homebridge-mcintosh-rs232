@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] - 2026-04-04
+### Changed
+- Switched characteristic reads from multiple live endpoint calls to a shared cached `/state` refresh path.
+- `onGet` handlers now return cached values immediately and refresh bridge state in the background, which reduces Homebridge slow-read warnings for `On`, `Active`, `Active Identifier`, and `Brightness`.
+- Added focused Node tests for state snapshot application, refresh deduplication, and cached getter behavior.
+
 ## [1.0.5] - 2026-03-19
 ### Changed
 - Expanded the Homebridge version range to explicitly allow the `2.0.0-beta` series as well as stable `1.x` releases.

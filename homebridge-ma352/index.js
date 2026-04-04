@@ -8,6 +8,8 @@ const VOLUME_RAMP_STEP = 5;
 const VOLUME_RAMP_DELAY_MS = 1000;
 const REQUEST_TIMEOUT_MS = 2000;
 const READ_TIMEOUT_MS = 3500;
+const STATE_REFRESH_INTERVAL_MS = 5000;
+const WRITE_REFRESH_DELAY_MS = 250;
 
 class MA352Platform {
   constructor(log, config, api) {
@@ -28,6 +30,9 @@ class MA352Platform {
       volume: 0,
       input: null,
     };
+    this.refreshInFlight = null;
+    this.refreshTimer = null;
+    this.statePollTimer = null;
     this.volumeRampTimer = null;
     this.volumeRampTarget = null;
 
@@ -40,6 +45,8 @@ class MA352Platform {
     this.api.on("didFinishLaunching", () => {
       this.log.info("MA352 platform initialized; configuring accessories.");
       this.setupAccessories();
+      this.refreshStateSoon();
+      this.startStatePolling();
     });
   }
 
@@ -136,11 +143,10 @@ class MA352Platform {
         this.lastKnown.power = isOn;
         const path = isOn ? "/power/on" : "/power/off";
         await this.safePost(path, "power");
+        this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
       })
-      .onGet(async () => {
-        const isOn = await this.safeGetPower();
-        this.lastKnown.power = isOn;
-        return isOn;
+      .onGet(() => {
+        return this.getCachedPower();
       });
 
     if (this.inputMap.size > 0) {
@@ -154,9 +160,10 @@ class MA352Platform {
           await this.safeSetInput(identifier);
           this.lastKnown.input = identifier;
           tvService.updateCharacteristic(Characteristic.ActiveIdentifier, identifier);
+          this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
         })
-        .onGet(async () => {
-          const current = await this.safeGetInput();
+        .onGet(() => {
+          const current = this.getCachedInput();
           if (typeof current === "number") {
             return current;
           }
@@ -177,11 +184,10 @@ class MA352Platform {
         this.lastKnown.mute = isOn;
         const path = isOn ? "/mute/on" : "/mute/off";
         await this.safePost(path, "mute");
+        this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
       })
-      .onGet(async () => {
-        const muted = await this.safeGetMute();
-        this.lastKnown.mute = muted;
-        return muted;
+      .onGet(() => {
+        return this.getCachedMute();
       });
   }
 
@@ -212,16 +218,16 @@ class MA352Platform {
 
         if (requested > current && (requested - current) > VOLUME_RAMP_STEP) {
           this.startVolumeRamp(service, requested);
+          this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
           return;
         }
 
         this.lastKnown.volume = requested;
         service.updateCharacteristic(Characteristic.Brightness, this.deviceToHomekitVolume(requested));
+        this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
       })
-      .onGet(async () => {
-        const level = await this.safeGetVolume();
-        this.lastKnown.volume = level;
-        return this.deviceToHomekitVolume(level);
+      .onGet(() => {
+        return this.deviceToHomekitVolume(this.getCachedVolume());
       });
   }
 
@@ -288,6 +294,122 @@ class MA352Platform {
     clearTimeout(this.volumeRampTimer);
     this.volumeRampTimer = null;
     this.volumeRampTarget = null;
+  }
+
+  startStatePolling() {
+    if (this.statePollTimer) {
+      clearInterval(this.statePollTimer);
+    }
+    this.statePollTimer = setInterval(() => {
+      this.refreshStateSoon();
+    }, STATE_REFRESH_INTERVAL_MS);
+  }
+
+  refreshStateSoon(delayMs = 0) {
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      void this.refreshState();
+    }, delayMs);
+  }
+
+  async refreshState() {
+    if (this.refreshInFlight) {
+      return this.refreshInFlight;
+    }
+
+    this.refreshInFlight = (async () => {
+      try {
+        const res = await this.request("/state", { timeoutMs: READ_TIMEOUT_MS });
+        const data = await res.json();
+        if (data && typeof data === "object") {
+          this.applyStateSnapshot(data);
+        }
+      } catch (err) {
+        this.logReadFailure("State", err);
+      } finally {
+        this.refreshInFlight = null;
+      }
+    })();
+
+    return this.refreshInFlight;
+  }
+
+  applyStateSnapshot(snapshot) {
+    if (typeof snapshot.power === "boolean") {
+      this.lastKnown.power = snapshot.power;
+    }
+    if (typeof snapshot.mute === "boolean") {
+      this.lastKnown.mute = snapshot.mute;
+    }
+    if (typeof snapshot.volume === "number") {
+      this.lastKnown.volume = this.normalizeDeviceVolume(snapshot.volume);
+    }
+    if (typeof snapshot.input === "number") {
+      const value = Math.round(Number(snapshot.input));
+      if (this.inputMap.has(value)) {
+        this.lastKnown.input = value;
+      }
+    }
+
+    this.updateAccessoriesFromCache();
+  }
+
+  updateAccessoriesFromCache() {
+    const Service = this.api?.hap?.Service;
+    const Characteristic = this.api?.hap?.Characteristic;
+    if (!Service || !Characteristic) {
+      return;
+    }
+
+    const accessory = this.accessories.get(this.api.hap.uuid.generate(this.mainKey));
+    if (!accessory) {
+      return;
+    }
+
+    const tvService = accessory.getService(Service.Television);
+    if (tvService) {
+      tvService.updateCharacteristic(Characteristic.Active, this.lastKnown.power);
+      if (typeof this.lastKnown.input === "number") {
+        tvService.updateCharacteristic(Characteristic.ActiveIdentifier, this.lastKnown.input);
+      }
+    }
+
+    const muteService = accessory.getService(Service.Switch);
+    if (muteService) {
+      muteService.updateCharacteristic(Characteristic.On, this.lastKnown.mute);
+    }
+
+    const volumeService = accessory.getService(Service.Lightbulb);
+    if (volumeService) {
+      volumeService.updateCharacteristic(
+        Characteristic.Brightness,
+        this.deviceToHomekitVolume(this.lastKnown.volume),
+      );
+    }
+  }
+
+  getCachedPower() {
+    this.refreshStateSoon();
+    return this.lastKnown.power;
+  }
+
+  getCachedMute() {
+    this.refreshStateSoon();
+    return this.lastKnown.mute;
+  }
+
+  getCachedVolume() {
+    this.refreshStateSoon();
+    return this.getLastKnownDeviceVolume();
+  }
+
+  getCachedInput() {
+    this.refreshStateSoon();
+    return this.lastKnown.input;
   }
 
   async safeGetVolume() {
@@ -449,3 +571,5 @@ class MA352Platform {
 module.exports = (api) => {
   api.registerPlatform(PLUGIN_NAME, PLATFORM_NAME, MA352Platform);
 };
+
+module.exports.MA352Platform = MA352Platform;
