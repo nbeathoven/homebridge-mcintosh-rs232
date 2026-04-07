@@ -33,6 +33,7 @@ class MA352Platform {
     this.refreshInFlight = null;
     this.refreshTimer = null;
     this.statePollTimer = null;
+    this.hasAppliedStateSnapshot = false;
     this.volumeRampTimer = null;
     this.volumeRampTarget = null;
 
@@ -339,6 +340,8 @@ class MA352Platform {
   }
 
   applyStateSnapshot(snapshot) {
+    const previous = { ...this.lastKnown };
+
     if (typeof snapshot.power === "boolean") {
       this.lastKnown.power = snapshot.power;
     }
@@ -355,7 +358,45 @@ class MA352Platform {
       }
     }
 
+    this.logStateChanges(previous, this.lastKnown);
+    this.hasAppliedStateSnapshot = true;
     this.updateAccessoriesFromCache();
+  }
+
+  logStateChanges(previous, current) {
+    if (!this.hasAppliedStateSnapshot) {
+      return;
+    }
+
+    if (previous.power !== current.power) {
+      this.log.info(`Power changed: ${this.formatPower(previous.power)} -> ${this.formatPower(current.power)}`);
+    }
+    if (previous.mute !== current.mute) {
+      this.log.info(`Mute changed: ${previous.mute} -> ${current.mute}`);
+    }
+    if (previous.volume !== current.volume) {
+      this.log.info(`Volume changed: ${previous.volume} -> ${current.volume}`);
+    }
+    if (previous.input !== current.input) {
+      this.log.info(`Input changed: ${this.formatInput(previous.input)} -> ${this.formatInput(current.input)}`);
+    }
+  }
+
+  formatPower(value) {
+    if (value === null || value === undefined) {
+      return "unknown";
+    }
+    return value ? "on" : "off";
+  }
+
+  formatInput(value) {
+    if (value === null || value === undefined) {
+      return "unknown";
+    }
+    if (this.inputMap.has(value)) {
+      return `${value} (${this.inputMap.get(value)})`;
+    }
+    return String(value);
   }
 
   updateAccessoriesFromCache() {

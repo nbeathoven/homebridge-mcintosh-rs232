@@ -73,3 +73,42 @@ test("cached getters return immediately and trigger a refresh", () => {
   assert.equal(platform.getCachedInput(), 4);
   assert.equal(refreshCalls, 4);
 });
+
+test("applyStateSnapshot logs change-only state transitions after first snapshot", () => {
+  const infoCalls = [];
+  const platform = new MA352Platform(
+    {
+      info(message) {
+        infoCalls.push(message);
+      },
+      warn() {},
+      debug() {},
+    },
+    {},
+    null,
+  );
+  platform.updateAccessoriesFromCache = () => {};
+
+  platform.applyStateSnapshot({
+    power: false,
+    mute: false,
+    volume: 10,
+    input: 1,
+  });
+
+  assert.deepEqual(infoCalls, []);
+
+  platform.applyStateSnapshot({
+    power: true,
+    mute: true,
+    volume: 15,
+    input: 6,
+  });
+
+  assert.deepEqual(infoCalls, [
+    "Power changed: off -> on",
+    "Mute changed: false -> true",
+    "Volume changed: 10 -> 15",
+    "Input changed: 1 (MC) -> 6 (AUX)",
+  ]);
+});

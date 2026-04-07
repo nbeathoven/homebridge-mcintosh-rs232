@@ -41,6 +41,7 @@ If `inputs` is omitted, the plugin exposes the default 1-9 input map.
 - Volume slider mapped from HomeKit 0-100 to device 0-50
 - Input selection through a TV-style accessory
 - Cached bridge state refresh via `/state` so HomeKit reads return quickly instead of blocking on multiple live HTTP calls
+- Change-only Homebridge logs when the amp power, mute, input, or volume state changes
 
 ## Requirements
 
