@@ -219,3 +219,26 @@ test("bridge recovery is logged after an outage", async () => {
     global.fetch = originalFetch;
   }
 });
+
+test("refreshState does not emit duplicate read warnings during a bridge outage", async () => {
+  const platform = createPlatform();
+  platform.hosts = ["bad-host"];
+  platform.activeHost = "bad-host";
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    const error = new Error("fetch failed");
+    error.cause = { code: "EHOSTUNREACH", message: "connect EHOSTUNREACH" };
+    throw error;
+  };
+
+  try {
+    await platform.refreshState();
+    await platform.refreshState();
+    assert.equal(platform.warnCalls.length, 1);
+    assert.match(platform.warnCalls[0], /Bridge request failed for \/state/);
+    assert.doesNotMatch(platform.warnCalls[0], /State read failed/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

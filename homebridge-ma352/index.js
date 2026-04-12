@@ -665,7 +665,8 @@ class MA352Platform {
     }
 
     const error = new Error(this.buildBridgeFailureMessage(path, attempts));
-    error.bridgeFailureLogged = this.noteBridgeUnavailable(error.message);
+    this.noteBridgeUnavailable(error.message);
+    error.bridgeFailureLogged = true;
     throw error;
   }
 
