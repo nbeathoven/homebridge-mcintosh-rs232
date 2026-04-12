@@ -174,8 +174,9 @@ Homebridge config
 {
   "platform": "MA352Platform",
   "name": "McIntosh Amp",
-  "host": "192.168.1.50",
+  "host": "Epcilon",
   "port": 5000,
+  "fallbackHosts": ["192.168.5.163"],
   "inputs": [
     { "value": 1, "name": "MC" },
     { "value": 3, "name": "CD1" },
@@ -184,6 +185,7 @@ Homebridge config
 }
 ```
 If `inputs` is omitted, the plugin exposes the default 1–9 map.
+If `fallbackHosts` is set, the plugin will retry those endpoints when the primary bridge host is unreachable.
 The plugin exposes a single accessory with a TV-style input selector, plus mute and a volume slider under the same device.
 HomeKit sees the volume slider as a normal 0–100 percentage, and the plugin maps that to the bridge's 0–50 device range.
 Upward changes still ramp in +5 device-volume steps to match the bridge queue behavior.

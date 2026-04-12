@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2026-04-11
+### Changed
+- Added optional `fallbackHosts` support so the plugin can retry bridge requests against alternate hostnames or IPs when the primary endpoint is unreachable.
+- Improved bridge failure diagnostics to include attempted endpoints and underlying network error details instead of only logging `fetch failed`.
+- Added explicit backend outage and recovery logs while preserving the last known HomeKit state during bridge outages.
+- Added focused tests covering endpoint failover and outage/recovery logging.
+
 ## [1.0.7] - 2026-04-06
 ### Changed
 - Added change-only Homebridge info logs for bridge state transitions after the first successful `/state` snapshot.

@@ -17,6 +17,14 @@
         "default": 5000,
         "description": "HTTP port for the MA352 bridge service"
       },
+      "fallbackHosts": {
+        "title": "Fallback Hosts",
+        "type": "array",
+        "description": "Optional secondary hostnames or IPs to try if the primary bridge host is unreachable.",
+        "items": {
+          "type": "string"
+        }
+      },
       "name": {
         "title": "Accessory Name",
         "type": "string",

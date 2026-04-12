@@ -18,10 +18,10 @@ class MA352Platform {
     this.api = api;
 
     this.deviceName = this.config.name || "McIntosh Amp";
-    this.host = this.config.host || "127.0.0.1";
     this.port = this.config.port || 5000;
-    this.baseUrl = `http://${this.host}:${this.port}`;
     this.mainKey = "ma352-main";
+    this.hosts = this.buildBridgeHosts();
+    this.activeHost = this.hosts[0];
 
     this.accessories = new Map();
     this.lastKnown = {
@@ -36,6 +36,8 @@ class MA352Platform {
     this.hasAppliedStateSnapshot = false;
     this.volumeRampTimer = null;
     this.volumeRampTarget = null;
+    this.bridgeAvailable = true;
+    this.lastBridgeFailureSummary = null;
 
     this.inputMap = this.buildInputMap();
 
@@ -81,6 +83,42 @@ class MA352Platform {
     map.set(8, "D2A");
     map.set(9, "Tuner");
     return map;
+  }
+
+  buildBridgeHosts() {
+    const hosts = [];
+    const configured = [this.config.host || "127.0.0.1"];
+    if (Array.isArray(this.config.fallbackHosts)) {
+      configured.push(...this.config.fallbackHosts);
+    }
+
+    for (const rawHost of configured) {
+      const host = String(rawHost || "").trim();
+      if (!host || hosts.includes(host)) {
+        continue;
+      }
+      hosts.push(host);
+    }
+
+    return hosts.length > 0 ? hosts : ["127.0.0.1"];
+  }
+
+  orderedBridgeHosts() {
+    if (!this.activeHost || !this.hosts.includes(this.activeHost)) {
+      return [...this.hosts];
+    }
+    return [
+      this.activeHost,
+      ...this.hosts.filter((host) => host !== this.activeHost),
+    ];
+  }
+
+  endpointUrl(host, path) {
+    return `http://${host}:${this.port}${path}`;
+  }
+
+  endpointLabel(host) {
+    return `${host}:${this.port}`;
   }
 
   configureAccessory(accessory) {
@@ -558,6 +596,9 @@ class MA352Platform {
   }
 
   logReadFailure(label, err) {
+    if (err?.bridgeFailureLogged) {
+      return;
+    }
     if (this.isAbortError(err)) {
       this.log.debug?.(`${label} read timed out; keeping last known value.`);
       return;
@@ -574,38 +615,136 @@ class MA352Platform {
 
   async request(path, options = {}) {
     const { timeoutMs = REQUEST_TIMEOUT_MS, ...fetchOptions } = options;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    let response;
-    try {
-      response = await fetch(`${this.baseUrl}${path}`, {
-        ...fetchOptions,
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
+    const attempts = [];
+
+    for (const host of this.orderedBridgeHosts()) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      let response;
+      try {
+        response = await fetch(this.endpointUrl(host, path), {
+          ...fetchOptions,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        attempts.push({
+          host,
+          summary: this.formatRequestError(err),
+        });
+        if (this.isRetryableRequestError(err)) {
+          continue;
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      if (!response.ok) {
+        this.noteBridgeAvailable(host);
+        let detail = "";
+        try {
+          const data = await response.json();
+          if (data && typeof data.error === "string") {
+            detail = data.error;
+          } else {
+            detail = JSON.stringify(data);
+          }
+        } catch (err) {
+          try {
+            detail = await response.text();
+          } catch (textErr) {
+            detail = "";
+          }
+        }
+        const suffix = detail ? `: ${detail}` : "";
+        throw new Error(`HTTP ${response.status} for ${path} via ${this.endpointLabel(host)}${suffix}`);
+      }
+
+      this.noteBridgeAvailable(host);
+      return response;
     }
 
-    if (!response.ok) {
-      let detail = "";
-      try {
-        const data = await response.json();
-        if (data && typeof data.error === "string") {
-          detail = data.error;
-        } else {
-          detail = JSON.stringify(data);
-        }
-      } catch (err) {
-        try {
-          detail = await response.text();
-        } catch (textErr) {
-          detail = "";
-        }
-      }
-      const suffix = detail ? `: ${detail}` : "";
-      throw new Error(`HTTP ${response.status} for ${path}${suffix}`);
+    const error = new Error(this.buildBridgeFailureMessage(path, attempts));
+    error.bridgeFailureLogged = this.noteBridgeUnavailable(error.message);
+    throw error;
+  }
+
+  isRetryableRequestError(err) {
+    if (this.isAbortError(err)) {
+      return true;
     }
-    return response;
+    if (!err) {
+      return false;
+    }
+    if (err.message === "fetch failed") {
+      return true;
+    }
+    const code = err.cause?.code;
+    return [
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "EHOSTUNREACH",
+      "ENETUNREACH",
+      "ETIMEDOUT",
+      "EAI_AGAIN",
+      "ENOTFOUND",
+    ].includes(code);
+  }
+
+  formatRequestError(err) {
+    if (!err) {
+      return "unknown error";
+    }
+    const parts = [];
+    if (this.isAbortError(err)) {
+      parts.push("timeout");
+    } else if (err.message) {
+      parts.push(err.message);
+    } else {
+      parts.push(String(err));
+    }
+    if (err.cause?.code) {
+      parts.push(err.cause.code);
+    }
+    if (err.cause?.message && err.cause.message !== err.message) {
+      parts.push(err.cause.message);
+    }
+    return parts.join(" | ");
+  }
+
+  buildBridgeFailureMessage(path, attempts) {
+    const formattedAttempts = attempts.map(({ host, summary }) => {
+      return `${this.endpointLabel(host)} (${summary})`;
+    });
+    return `Bridge request failed for ${path}; attempted ${formattedAttempts.join(", ")}`;
+  }
+
+  noteBridgeUnavailable(summary) {
+    if (!this.bridgeAvailable && this.lastBridgeFailureSummary === summary) {
+      return false;
+    }
+
+    this.bridgeAvailable = false;
+    this.lastBridgeFailureSummary = summary;
+    this.log.warn(`${summary}; keeping last known state until connectivity returns.`);
+    this.updateAccessoriesFromCache();
+    return true;
+  }
+
+  noteBridgeAvailable(host) {
+    const previousHost = this.activeHost;
+    const wasUnavailable = !this.bridgeAvailable;
+
+    this.bridgeAvailable = true;
+    this.lastBridgeFailureSummary = null;
+    this.activeHost = host;
+
+    if (wasUnavailable) {
+      this.log.info(`Bridge connectivity restored via ${this.endpointLabel(host)}.`);
+      this.updateAccessoriesFromCache();
+    } else if (previousHost && previousHost !== host) {
+      this.log.info(`Bridge endpoint switched to ${this.endpointLabel(host)}.`);
+    }
   }
 }
 

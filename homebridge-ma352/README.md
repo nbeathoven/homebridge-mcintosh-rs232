@@ -22,8 +22,9 @@ Revisions: see `CHANGELOG.md` in this package for release notes.
 {
   "platform": "MA352Platform",
   "name": "McIntosh Amp",
-  "host": "192.168.1.50",
+  "host": "Epcilon",
   "port": 5000,
+  "fallbackHosts": ["192.168.5.163"],
   "inputs": [
     { "value": 1, "name": "MC" },
     { "value": 3, "name": "CD1" },
@@ -33,6 +34,7 @@ Revisions: see `CHANGELOG.md` in this package for release notes.
 ```
 
 If `inputs` is omitted, the plugin exposes the default 1-9 input map.
+If `fallbackHosts` is set, the plugin will retry those endpoints when the primary host is unreachable and log connectivity loss and recovery explicitly.
 
 ## Features
 
@@ -42,6 +44,7 @@ If `inputs` is omitted, the plugin exposes the default 1-9 input map.
 - Input selection through a TV-style accessory
 - Cached bridge state refresh via `/state` so HomeKit reads return quickly instead of blocking on multiple live HTTP calls
 - Change-only Homebridge logs when the amp power, mute, input, or volume state changes
+- Endpoint failover with explicit backend outage and recovery logging
 
 ## Requirements
 
