@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.10] - 2026-04-12
+### Changed
+- Changed bridge failover to prefer the configured primary hostname, retry it once after a short delay, and then fail over to fallback hosts.
+- Made fallback selection sticky so the plugin no longer flips back and forth between hostname and IP on every successful poll.
+- Primary host recovery is now promoted only on an intentional later probe instead of the first opportunistic success after failover.
+- Added focused tests covering primary retry order, sticky failover, and controlled promotion back to the primary host.
+
 ## [1.0.9] - 2026-04-11
 ### Changed
 - Suppressed duplicate `State read failed` warnings during a single bridge outage window so logs now emphasize the first outage summary and the later recovery event.

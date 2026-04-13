@@ -18,6 +18,7 @@ function createPlatform() {
   };
   const platform = new MA352Platform(log, {}, null);
   platform.updateAccessoriesFromCache = () => {};
+  platform.sleep = async () => {};
   platform.infoCalls = infoCalls;
   platform.warnCalls = warnCalls;
   return platform;
@@ -136,9 +137,12 @@ test("request falls back to the next configured bridge host", async () => {
     null,
   );
   platform.updateAccessoriesFromCache = () => {};
+  platform.sleep = async () => {};
 
   const originalFetch = global.fetch;
+  const requestedUrls = [];
   global.fetch = async (url) => {
+    requestedUrls.push(url);
     if (url.startsWith("http://bad-host:5000")) {
       const error = new Error("fetch failed");
       error.cause = { code: "EHOSTUNREACH", message: "connect EHOSTUNREACH" };
@@ -157,6 +161,11 @@ test("request falls back to the next configured bridge host", async () => {
     assert.equal(response.ok, true);
     assert.equal(platform.activeHost, "good-host");
     assert.equal(platform.bridgeAvailable, true);
+    assert.deepEqual(requestedUrls, [
+      "http://bad-host:5000/state",
+      "http://bad-host:5000/state",
+      "http://good-host:5000/state",
+    ]);
   } finally {
     global.fetch = originalFetch;
   }
@@ -189,6 +198,7 @@ test("bridge failures are logged once until connectivity returns", async () => {
 test("bridge recovery is logged after an outage", async () => {
   const platform = createPlatform();
   platform.hosts = ["good-host"];
+  platform.primaryHost = "good-host";
   platform.activeHost = "good-host";
 
   let shouldFail = true;
@@ -238,6 +248,78 @@ test("refreshState does not emit duplicate read warnings during a bridge outage"
     assert.equal(platform.warnCalls.length, 1);
     assert.match(platform.warnCalls[0], /Bridge request failed for \/state/);
     assert.doesNotMatch(platform.warnCalls[0], /State read failed/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("primary host remains sticky after failover until an intentional recovery probe succeeds", async () => {
+  const platform = createPlatform();
+  platform.hosts = ["Epcilon", "192.168.5.163"];
+  platform.primaryHost = "Epcilon";
+  platform.activeHost = "192.168.5.163";
+  platform.lastPrimaryProbeAt = Date.now();
+
+  const originalFetch = global.fetch;
+  const requestedUrls = [];
+  global.fetch = async (url) => {
+    requestedUrls.push(url);
+    if (url.startsWith("http://192.168.5.163:5000")) {
+      const error = new Error("fetch failed");
+      error.cause = { code: "ETIMEDOUT", message: "connect ETIMEDOUT" };
+      throw error;
+    }
+    return {
+      ok: true,
+      async json() {
+        return {};
+      },
+    };
+  };
+
+  try {
+    const response = await platform.request("/state");
+    assert.equal(response.ok, true);
+    assert.equal(platform.activeHost, "192.168.5.163");
+    assert.deepEqual(platform.infoCalls, []);
+    assert.deepEqual(requestedUrls, [
+      "http://192.168.5.163:5000/state",
+      "http://Epcilon:5000/state",
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("primary host is promoted back only when a recovery probe succeeds", async () => {
+  const platform = createPlatform();
+  platform.hosts = ["Epcilon", "192.168.5.163"];
+  platform.primaryHost = "Epcilon";
+  platform.activeHost = "192.168.5.163";
+  platform.lastPrimaryProbeAt = Date.now() - (10 * 60 * 1000);
+
+  const originalFetch = global.fetch;
+  const requestedUrls = [];
+  global.fetch = async (url) => {
+    requestedUrls.push(url);
+    return {
+      ok: true,
+      async json() {
+        return {};
+      },
+    };
+  };
+
+  try {
+    const response = await platform.request("/state");
+    assert.equal(response.ok, true);
+    assert.equal(platform.activeHost, "Epcilon");
+    assert.deepEqual(platform.infoCalls, [
+      "Bridge endpoint switched to Epcilon:5000.",
+    ]);
+    assert.deepEqual(requestedUrls, [
+      "http://Epcilon:5000/state",
+    ]);
   } finally {
     global.fetch = originalFetch;
   }

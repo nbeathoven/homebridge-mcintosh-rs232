@@ -10,6 +10,8 @@ const REQUEST_TIMEOUT_MS = 2000;
 const READ_TIMEOUT_MS = 3500;
 const STATE_REFRESH_INTERVAL_MS = 5000;
 const WRITE_REFRESH_DELAY_MS = 250;
+const PRIMARY_HOST_RETRY_DELAY_MS = 1000;
+const PRIMARY_RECOVERY_PROBE_INTERVAL_MS = 5 * 60 * 1000;
 
 class MA352Platform {
   constructor(log, config, api) {
@@ -21,7 +23,9 @@ class MA352Platform {
     this.port = this.config.port || 5000;
     this.mainKey = "ma352-main";
     this.hosts = this.buildBridgeHosts();
-    this.activeHost = this.hosts[0];
+    this.primaryHost = this.hosts[0];
+    this.activeHost = this.primaryHost;
+    this.lastPrimaryProbeAt = 0;
 
     this.accessories = new Map();
     this.lastKnown = {
@@ -103,14 +107,82 @@ class MA352Platform {
     return hosts.length > 0 ? hosts : ["127.0.0.1"];
   }
 
-  orderedBridgeHosts() {
-    if (!this.activeHost || !this.hosts.includes(this.activeHost)) {
-      return [...this.hosts];
+  shouldProbePrimaryHost(now = Date.now()) {
+    if (!this.primaryHost || !this.hosts.includes(this.primaryHost)) {
+      return false;
     }
-    return [
-      this.activeHost,
-      ...this.hosts.filter((host) => host !== this.activeHost),
-    ];
+    if (!this.activeHost || !this.hosts.includes(this.activeHost)) {
+      return true;
+    }
+    if (this.activeHost === this.primaryHost) {
+      return true;
+    }
+    return (now - this.lastPrimaryProbeAt) >= PRIMARY_RECOVERY_PROBE_INTERVAL_MS;
+  }
+
+  orderedBridgeHosts(now = Date.now()) {
+    const ordered = [];
+    const shouldProbePrimary = this.shouldProbePrimaryHost(now);
+
+    if (shouldProbePrimary) {
+      ordered.push(this.primaryHost);
+      this.lastPrimaryProbeAt = now;
+    }
+
+    if (this.activeHost && this.hosts.includes(this.activeHost) && !ordered.includes(this.activeHost)) {
+      ordered.push(this.activeHost);
+    }
+
+    for (const host of this.hosts) {
+      if (!ordered.includes(host)) {
+        ordered.push(host);
+      }
+    }
+
+    return ordered.length > 0 ? ordered : [...this.hosts];
+  }
+
+  buildBridgeAttemptPlan(ordered = this.orderedBridgeHosts()) {
+    if (ordered.length === 0) {
+      return [];
+    }
+
+    const attempts = [{ host: ordered[0] }];
+    if (ordered[0] === this.primaryHost) {
+      attempts.push({
+        host: ordered[0],
+        retryDelayMs: PRIMARY_HOST_RETRY_DELAY_MS,
+      });
+    }
+
+    for (let index = 1; index < ordered.length; index += 1) {
+      attempts.push({ host: ordered[index] });
+    }
+
+    return attempts;
+  }
+
+  shouldPromoteHost(host, orderedHosts) {
+    if (!host || !this.hosts.includes(host)) {
+      return false;
+    }
+    if (!this.activeHost || !this.hosts.includes(this.activeHost)) {
+      return true;
+    }
+    if (host === this.activeHost) {
+      return true;
+    }
+    if (this.activeHost === this.primaryHost) {
+      return true;
+    }
+    if (host !== this.primaryHost) {
+      return true;
+    }
+    return orderedHosts[0] === this.primaryHost;
+  }
+
+  async sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   endpointUrl(host, path) {
@@ -616,8 +688,15 @@ class MA352Platform {
   async request(path, options = {}) {
     const { timeoutMs = REQUEST_TIMEOUT_MS, ...fetchOptions } = options;
     const attempts = [];
+    const now = Date.now();
+    const orderedHosts = this.orderedBridgeHosts(now);
+    const attemptPlan = this.buildBridgeAttemptPlan(orderedHosts);
 
-    for (const host of this.orderedBridgeHosts()) {
+    for (const plan of attemptPlan) {
+      const { host, retryDelayMs = 0 } = plan;
+      if (retryDelayMs > 0) {
+        await this.sleep(retryDelayMs);
+      }
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       let response;
@@ -640,7 +719,7 @@ class MA352Platform {
       }
 
       if (!response.ok) {
-        this.noteBridgeAvailable(host);
+        this.noteBridgeAvailable(host, { promote: this.shouldPromoteHost(host, orderedHosts) });
         let detail = "";
         try {
           const data = await response.json();
@@ -660,7 +739,7 @@ class MA352Platform {
         throw new Error(`HTTP ${response.status} for ${path} via ${this.endpointLabel(host)}${suffix}`);
       }
 
-      this.noteBridgeAvailable(host);
+      this.noteBridgeAvailable(host, { promote: this.shouldPromoteHost(host, orderedHosts) });
       return response;
     }
 
@@ -732,18 +811,20 @@ class MA352Platform {
     return true;
   }
 
-  noteBridgeAvailable(host) {
+  noteBridgeAvailable(host, { promote = true } = {}) {
     const previousHost = this.activeHost;
     const wasUnavailable = !this.bridgeAvailable;
 
     this.bridgeAvailable = true;
     this.lastBridgeFailureSummary = null;
-    this.activeHost = host;
+    if (promote) {
+      this.activeHost = host;
+    }
 
     if (wasUnavailable) {
       this.log.info(`Bridge connectivity restored via ${this.endpointLabel(host)}.`);
       this.updateAccessoriesFromCache();
-    } else if (previousHost && previousHost !== host) {
+    } else if (promote && previousHost && previousHost !== host) {
       this.log.info(`Bridge endpoint switched to ${this.endpointLabel(host)}.`);
     }
   }
