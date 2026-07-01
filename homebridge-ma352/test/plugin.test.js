@@ -122,6 +122,70 @@ test("applyStateSnapshot logs change-only state transitions after first snapshot
   ]);
 });
 
+test("setDeviceVolume maps HomeKit 0-100 to the device 0-50 range and posts it", async () => {
+  const platform = createPlatform();
+  const posted = [];
+  platform.safePost = async (path) => {
+    posted.push(path);
+  };
+  platform.refreshStateSoon = () => {};
+
+  await platform.setDeviceVolume(100);
+  assert.equal(platform.lastKnown.volume, 50);
+
+  await platform.setDeviceVolume(50);
+  assert.equal(platform.lastKnown.volume, 25);
+
+  assert.deepEqual(posted, [
+    "/volume/set?level=50",
+    "/volume/set?level=25",
+  ]);
+});
+
+test("stepDeviceVolume steps by one device unit and clamps at the range edges", async () => {
+  const platform = createPlatform();
+  const posted = [];
+  platform.safePost = async (path) => {
+    posted.push(path);
+  };
+  platform.refreshStateSoon = () => {};
+
+  platform.lastKnown.volume = 25;
+  await platform.stepDeviceVolume(1);
+  assert.equal(platform.lastKnown.volume, 26);
+  await platform.stepDeviceVolume(-1);
+  assert.equal(platform.lastKnown.volume, 25);
+
+  platform.lastKnown.volume = 50;
+  await platform.stepDeviceVolume(1);
+  assert.equal(platform.lastKnown.volume, 50, "does not exceed DEVICE_VOLUME_MAX");
+
+  platform.lastKnown.volume = 0;
+  await platform.stepDeviceVolume(-1);
+  assert.equal(platform.lastKnown.volume, 0, "does not drop below 0");
+
+  assert.deepEqual(posted, [
+    "/volume/set?level=26",
+    "/volume/set?level=25",
+  ], "no request is sent when the value is already at an edge");
+});
+
+test("setMute posts the matching path and caches the new state", async () => {
+  const platform = createPlatform();
+  const posted = [];
+  platform.safePost = async (path) => {
+    posted.push(path);
+  };
+  platform.refreshStateSoon = () => {};
+
+  await platform.setMute(true);
+  assert.equal(platform.lastKnown.mute, true);
+  await platform.setMute(false);
+  assert.equal(platform.lastKnown.mute, false);
+
+  assert.deepEqual(posted, ["/mute/on", "/mute/off"]);
+});
+
 test("request falls back to the next configured bridge host", async () => {
   const platform = new MA352Platform(
     {

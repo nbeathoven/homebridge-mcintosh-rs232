@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-01
+### Changed
+- Volume is now exposed through a `TelevisionSpeaker` service linked to the TV accessory instead of a `Fan`. Volume is controlled with the iPhone/iPad hardware volume buttons and the Control Center Remote, and mute is integrated into the speaker (the standalone mute switch remains for a quick toggle). There is no on-tile volume slider — that is a limitation of how Apple's Home app renders `TelevisionSpeaker`. Any previous `Fan` or `Lightbulb` volume tile is removed automatically on startup.
+- Removed the plugin's client-side volume ramp animation; the bridge already ramps volume server-side, so the client-side stepping was redundant.
+
+### Fixed
+- Removed unused per-characteristic read helpers (`safeGetPower`/`safeGetMute`/`safeGetVolume`/`safeGetInput`) now that all reads go through the cached `/state` snapshot.
+- Volume writes now swallow bridge errors and reconcile on the next poll, consistent with power/mute/input, instead of surfacing a HomeKit error.
+- Poll and refresh timers are now cleared on Homebridge shutdown.
+
 ## [1.1.0] - 2026-06-30
 ### Changed
 - Renamed the npm package to the scoped name `@nbeathoven/homebridge-ma352`. The previous unscoped `homebridge-ma352` package is deprecated in favor of this one. Update the plugin through the Homebridge UI or reinstall under the scoped name; Homebridge config is unchanged because the platform is still `MA352Platform`.

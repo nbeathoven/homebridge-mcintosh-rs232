@@ -4,8 +4,7 @@ const PLUGIN_NAME = "@nbeathoven/homebridge-ma352";
 const PLATFORM_NAME = "MA352Platform";
 const DEVICE_VOLUME_MAX = 50;
 const HOMEKIT_VOLUME_MAX = 100;
-const VOLUME_RAMP_STEP = 5;
-const VOLUME_RAMP_DELAY_MS = 1000;
+const VOLUME_BUTTON_STEP = 1;
 const REQUEST_TIMEOUT_MS = 2000;
 const READ_TIMEOUT_MS = 3500;
 const STATE_REFRESH_INTERVAL_MS = 5000;
@@ -38,8 +37,7 @@ class MA352Platform {
     this.refreshTimer = null;
     this.statePollTimer = null;
     this.hasAppliedStateSnapshot = false;
-    this.volumeRampTimer = null;
-    this.volumeRampTarget = null;
+    this.speakerService = null;
     this.bridgeAvailable = true;
     this.lastBridgeFailureSummary = null;
 
@@ -55,6 +53,21 @@ class MA352Platform {
       this.refreshStateSoon();
       this.startStatePolling();
     });
+
+    this.api.on("shutdown", () => {
+      this.stopTimers();
+    });
+  }
+
+  stopTimers() {
+    if (this.statePollTimer) {
+      clearInterval(this.statePollTimer);
+      this.statePollTimer = null;
+    }
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
   }
 
   buildInputMap() {
@@ -200,9 +213,9 @@ class MA352Platform {
   setupAccessories() {
     const mainAccessory = this.getOrCreateAccessory(this.deviceName, this.mainKey);
     this.removeStaleAccessories(mainAccessory.UUID);
-    this.setupTelevision(mainAccessory);
+    const tvService = this.setupTelevision(mainAccessory);
     this.setupMute(mainAccessory);
-    this.setupVolume(mainAccessory);
+    this.setupSpeaker(mainAccessory, tvService);
   }
 
   getOrCreateAccessory(name, key) {
@@ -282,6 +295,8 @@ class MA352Platform {
           return Number.isInteger(first) ? first : 1;
         });
     }
+
+    return tvService;
   }
 
   setupMute(accessory) {
@@ -291,62 +306,93 @@ class MA352Platform {
     const service = accessory.getService(Service.Switch) || accessory.addService(Service.Switch, "MA352 Mute");
     service.getCharacteristic(Characteristic.On)
       .onSet(async (value) => {
-        const isOn = Boolean(value);
-        this.lastKnown.mute = isOn;
-        const path = isOn ? "/mute/on" : "/mute/off";
-        await this.safePost(path, "mute");
-        this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
+        await this.setMute(Boolean(value));
       })
       .onGet(() => {
         return this.getCachedMute();
       });
   }
 
-  setupVolume(accessory) {
+  setupSpeaker(accessory, tvService) {
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
-    const staleLightbulb = accessory.getService(Service.Lightbulb);
-    if (staleLightbulb) {
-      // Migrate the volume control off the Lightbulb service so it is no longer
-      // treated as a light (e.g. swept up by "turn off all the lights").
-      accessory.removeService(staleLightbulb);
+    // Migrate off the old Fan/Lightbulb volume tiles. Volume now lives on a
+    // TelevisionSpeaker linked to the TV, controlled by the hardware volume
+    // buttons and the Control Center Remote, so the amp is no longer
+    // misrepresented as a light or a fan.
+    for (const staleType of [Service.Fan, Service.Lightbulb]) {
+      const stale = accessory.getService(staleType);
+      if (stale) {
+        accessory.removeService(stale);
+      }
     }
 
-    const service = accessory.getService(Service.Fan) || accessory.addService(Service.Fan, "MA352 Volume");
-    service.getCharacteristic(Characteristic.On)
-      .onSet(async () => {
-        // Keep the volume slider always available; ignore On/Off toggles.
-      })
-      .onGet(async () => {
-        return true;
+    const speaker = accessory.getService(Service.TelevisionSpeaker) ||
+      accessory.addService(Service.TelevisionSpeaker, `${this.deviceName} Volume`);
+    this.speakerService = speaker;
+
+    speaker.setCharacteristic(Characteristic.Active, Characteristic.Active.ACTIVE);
+    speaker.setCharacteristic(
+      Characteristic.VolumeControlType,
+      Characteristic.VolumeControlType.ABSOLUTE,
+    );
+
+    // Hardware volume buttons (while the TV remote is on screen) send
+    // increment/decrement events; step the device volume accordingly.
+    speaker.getCharacteristic(Characteristic.VolumeSelector)
+      .onSet((value) => {
+        const direction = value === Characteristic.VolumeSelector.INCREMENT ? 1 : -1;
+        void this.stepDeviceVolume(direction);
       });
-    service.getCharacteristic(Characteristic.RotationSpeed)
-      .setProps({ minValue: 0, maxValue: HOMEKIT_VOLUME_MAX, minStep: 1 })
+
+    speaker.getCharacteristic(Characteristic.Volume)
       .onSet(async (value) => {
-        const requested = this.homekitToDeviceVolume(value);
-        const current = this.getLastKnownDeviceVolume();
-        this.stopVolumeRamp();
-        try {
-          await this.request(`/volume/set?level=${requested}`, { method: "POST" });
-        } catch (err) {
-          this.log.warn(`Volume request failed: ${err.message || err}`);
-          throw err;
-        }
-
-        if (requested > current && (requested - current) > VOLUME_RAMP_STEP) {
-          this.startVolumeRamp(service, requested);
-          this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
-          return;
-        }
-
-        this.lastKnown.volume = requested;
-        service.updateCharacteristic(Characteristic.RotationSpeed, this.deviceToHomekitVolume(requested));
-        this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
+        await this.setDeviceVolume(value);
       })
       .onGet(() => {
         return this.deviceToHomekitVolume(this.getCachedVolume());
       });
+
+    speaker.getCharacteristic(Characteristic.Mute)
+      .onSet(async (value) => {
+        await this.setMute(Boolean(value));
+      })
+      .onGet(() => {
+        return this.getCachedMute();
+      });
+
+    tvService.addLinkedService(speaker);
+  }
+
+  async setMute(isOn) {
+    this.lastKnown.mute = isOn;
+    await this.safePost(isOn ? "/mute/on" : "/mute/off", "mute");
+    this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
+  }
+
+  async setDeviceVolume(homekitValue) {
+    const level = this.homekitToDeviceVolume(homekitValue);
+    this.lastKnown.volume = level;
+    await this.safePost(`/volume/set?level=${level}`, "volume");
+    this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
+  }
+
+  async stepDeviceVolume(direction) {
+    const current = this.getLastKnownDeviceVolume();
+    const next = Math.max(0, Math.min(DEVICE_VOLUME_MAX, current + direction * VOLUME_BUTTON_STEP));
+    if (next === current) {
+      return;
+    }
+    this.lastKnown.volume = next;
+    await this.safePost(`/volume/set?level=${next}`, "volume");
+    if (this.speakerService) {
+      this.speakerService.updateCharacteristic(
+        this.api.hap.Characteristic.Volume,
+        this.deviceToHomekitVolume(next),
+      );
+    }
+    this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
   }
 
   setupInputs(accessory, tvService) {
@@ -376,42 +422,6 @@ class MA352Platform {
         accessory.removeService(service);
       }
     }
-  }
-
-  startVolumeRamp(service, target) {
-    this.stopVolumeRamp();
-    this.volumeRampTarget = target;
-
-    const tick = () => {
-      const current = this.getLastKnownDeviceVolume();
-      if (current >= target) {
-        this.volumeRampTimer = null;
-        return;
-      }
-      const next = Math.min(target, current + VOLUME_RAMP_STEP);
-      this.lastKnown.volume = next;
-      service.updateCharacteristic(
-        this.api.hap.Characteristic.RotationSpeed,
-        this.deviceToHomekitVolume(next),
-      );
-      if (next < target) {
-        this.volumeRampTimer = setTimeout(tick, VOLUME_RAMP_DELAY_MS);
-      } else {
-        this.volumeRampTimer = null;
-      }
-    };
-
-    this.volumeRampTimer = setTimeout(tick, 0);
-  }
-
-  stopVolumeRamp() {
-    if (!this.volumeRampTimer) {
-      this.volumeRampTarget = null;
-      return;
-    }
-    clearTimeout(this.volumeRampTimer);
-    this.volumeRampTimer = null;
-    this.volumeRampTarget = null;
   }
 
   startStatePolling() {
@@ -541,12 +551,13 @@ class MA352Platform {
       muteService.updateCharacteristic(Characteristic.On, this.lastKnown.mute);
     }
 
-    const volumeService = accessory.getService(Service.Fan);
-    if (volumeService) {
-      volumeService.updateCharacteristic(
-        Characteristic.RotationSpeed,
+    const speakerService = accessory.getService(Service.TelevisionSpeaker);
+    if (speakerService) {
+      speakerService.updateCharacteristic(
+        Characteristic.Volume,
         this.deviceToHomekitVolume(this.lastKnown.volume),
       );
+      speakerService.updateCharacteristic(Characteristic.Mute, this.lastKnown.mute);
     }
   }
 
@@ -570,31 +581,6 @@ class MA352Platform {
     return this.lastKnown.input;
   }
 
-  async safeGetVolume() {
-    try {
-      const res = await this.request("/volume", { timeoutMs: READ_TIMEOUT_MS });
-      const data = await res.json();
-      if (typeof data.level === "number") {
-        return this.normalizeDeviceVolume(data.level);
-      }
-    } catch (err) {
-      this.logReadFailure("Volume", err);
-    }
-
-    try {
-      const res = await this.request("/volume/lvl", { timeoutMs: READ_TIMEOUT_MS });
-      const text = await res.text();
-      const level = Number(text.trim());
-      if (!Number.isNaN(level)) {
-        return this.normalizeDeviceVolume(level);
-      }
-    } catch (err) {
-      this.logReadFailure("Volume fallback", err);
-    }
-
-    return this.getLastKnownDeviceVolume();
-  }
-
   normalizeDeviceVolume(value) {
     return Math.max(0, Math.min(DEVICE_VOLUME_MAX, Math.round(Number(value))));
   }
@@ -603,6 +589,9 @@ class MA352Platform {
     return Number.isFinite(this.lastKnown.volume) ? this.lastKnown.volume : 0;
   }
 
+  // HomeKit volume is 0-100 but the device is 0-50, so this mapping is lossy:
+  // adjacent HomeKit values can round to the same device level and read back
+  // one step off. That is expected given the coarser device range.
   homekitToDeviceVolume(value) {
     const homekitValue = Math.max(0, Math.min(HOMEKIT_VOLUME_MAX, Math.round(Number(value))));
     return Math.round((homekitValue / HOMEKIT_VOLUME_MAX) * DEVICE_VOLUME_MAX);
@@ -611,51 +600,6 @@ class MA352Platform {
   deviceToHomekitVolume(value) {
     const deviceValue = this.normalizeDeviceVolume(value);
     return Math.round((deviceValue / DEVICE_VOLUME_MAX) * HOMEKIT_VOLUME_MAX);
-  }
-
-  async safeGetMute() {
-    try {
-      const res = await this.request("/mute", { timeoutMs: READ_TIMEOUT_MS });
-      const data = await res.json();
-      if (typeof data.muted === "boolean") {
-        return data.muted;
-      }
-    } catch (err) {
-      this.logReadFailure("Mute", err);
-    }
-
-    return this.lastKnown.mute;
-  }
-
-  async safeGetPower() {
-    try {
-      const res = await this.request("/power", { timeoutMs: READ_TIMEOUT_MS });
-      const data = await res.json();
-      if (typeof data.on === "boolean") {
-        return data.on;
-      }
-    } catch (err) {
-      this.logReadFailure("Power", err);
-    }
-
-    return this.lastKnown.power;
-  }
-
-  async safeGetInput() {
-    try {
-      const res = await this.request("/input", { timeoutMs: READ_TIMEOUT_MS });
-      const data = await res.json();
-      if (typeof data.value === "number") {
-        const value = Math.round(Number(data.value));
-        if (this.inputMap.has(value)) {
-          return value;
-        }
-      }
-    } catch (err) {
-      this.logReadFailure("Input", err);
-    }
-
-    return this.lastKnown.input;
   }
 
   async safeSetInput(value) {

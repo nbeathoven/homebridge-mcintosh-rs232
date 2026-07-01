@@ -40,7 +40,8 @@ If `fallbackHosts` is set, the plugin will retry those endpoints when the primar
 
 - Power on/off
 - Mute on/off
-- Volume slider mapped from HomeKit 0-100 to device 0-50, exposed as a Fan (rotation speed) so it is not treated as a light
+- Volume exposed as a native `TelevisionSpeaker` linked to the TV accessory: control it with the iPhone/iPad hardware volume buttons and the Control Center Remote (HomeKit 0-100 mapped to device 0-50). Note there is no on-tile slider — Apple's Home app does not render one for `TelevisionSpeaker`.
+- Mute available both on the speaker and as a standalone switch for a quick toggle
 - Input selection through a TV-style accessory
 - Cached bridge state refresh via `/state` so HomeKit reads return quickly instead of blocking on multiple live HTTP calls
 - Change-only Homebridge logs when the amp power, mute, input, or volume state changes
