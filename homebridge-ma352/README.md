@@ -1,4 +1,4 @@
-# homebridge-ma352
+# @nbeathoven/homebridge-ma352
 
 Homebridge platform plugin for controlling a McIntosh MA-352 through the companion local RS-232 bridge service in this repository.
 
@@ -7,7 +7,7 @@ Author: `nbeathoven`
 ## Install
 
 ```bash
-npm install -g homebridge-ma352
+npm install -g @nbeathoven/homebridge-ma352
 ```
 
 You also need the MA-352 bridge service running on a host that can talk to the amplifier over RS-232.
@@ -40,7 +40,7 @@ If `fallbackHosts` is set, the plugin will retry those endpoints when the primar
 
 - Power on/off
 - Mute on/off
-- Volume slider mapped from HomeKit 0-100 to device 0-50
+- Volume slider mapped from HomeKit 0-100 to device 0-50, exposed as a Fan (rotation speed) so it is not treated as a light
 - Input selection through a TV-style accessory
 - Cached bridge state refresh via `/state` so HomeKit reads return quickly instead of blocking on multiple live HTTP calls
 - Change-only Homebridge logs when the amp power, mute, input, or volume state changes

@@ -153,10 +153,10 @@ curl "http://127.0.0.1:5000/firmware?timeout=1.5"
 
 Install from npm
 ```bash
-npm install -g homebridge-ma352
+npm install -g @nbeathoven/homebridge-ma352
 ```
 
-In Homebridge UI, search for `homebridge-ma352` from the Plugins screen and install it there.
+In Homebridge UI, search for `@nbeathoven/homebridge-ma352` from the Plugins screen and install it there.
 
 Local tarball install is still useful for development, but it is no longer the normal install path:
 ```bash
@@ -186,7 +186,7 @@ Homebridge config
 ```
 If `inputs` is omitted, the plugin exposes the default 1–9 map.
 If `fallbackHosts` is set, the plugin will retry those endpoints when the primary bridge host is unreachable.
-The plugin exposes a single accessory with a TV-style input selector, plus mute and a volume slider under the same device.
+The plugin exposes a single accessory with a TV-style input selector, plus mute and a volume slider (exposed as a Fan so HomeKit does not treat it as a light) under the same device.
 HomeKit sees the volume slider as a normal 0–100 percentage, and the plugin maps that to the bridge's 0–50 device range.
 Upward changes still ramp in +5 device-volume steps to match the bridge queue behavior.
 
@@ -195,7 +195,7 @@ This service is designed for a closed LAN. Do not expose the HTTP port to the pu
 
 **Release History**
 - GitHub Releases for this repo track bridge-service versions with tags like `bridge-service-v1.0.9`.
-- The Homebridge plugin is published separately to npm as `homebridge-ma352`.
+- The Homebridge plugin is published separately to npm as `@nbeathoven/homebridge-ma352` (the unscoped `homebridge-ma352` package is deprecated).
 - Homebridge plugin release tags use `homebridge-ma352-vX.Y.Z` and publish through `.github/workflows/publish.yml`.
 - `bridge-service/CHANGELOG.md` is the source of truth for bridge release notes, and GitHub Releases should mirror those entries.
 - `homebridge-ma352/CHANGELOG.md` is the source of truth for plugin release notes.

@@ -1,6 +1,6 @@
 "use strict";
 
-const PLUGIN_NAME = "homebridge-ma352";
+const PLUGIN_NAME = "@nbeathoven/homebridge-ma352";
 const PLATFORM_NAME = "MA352Platform";
 const DEVICE_VOLUME_MAX = 50;
 const HOMEKIT_VOLUME_MAX = 100;
@@ -306,7 +306,14 @@ class MA352Platform {
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
-    const service = accessory.getService(Service.Lightbulb) || accessory.addService(Service.Lightbulb, "MA352 Volume");
+    const staleLightbulb = accessory.getService(Service.Lightbulb);
+    if (staleLightbulb) {
+      // Migrate the volume control off the Lightbulb service so it is no longer
+      // treated as a light (e.g. swept up by "turn off all the lights").
+      accessory.removeService(staleLightbulb);
+    }
+
+    const service = accessory.getService(Service.Fan) || accessory.addService(Service.Fan, "MA352 Volume");
     service.getCharacteristic(Characteristic.On)
       .onSet(async () => {
         // Keep the volume slider always available; ignore On/Off toggles.
@@ -314,7 +321,7 @@ class MA352Platform {
       .onGet(async () => {
         return true;
       });
-    service.getCharacteristic(Characteristic.Brightness)
+    service.getCharacteristic(Characteristic.RotationSpeed)
       .setProps({ minValue: 0, maxValue: HOMEKIT_VOLUME_MAX, minStep: 1 })
       .onSet(async (value) => {
         const requested = this.homekitToDeviceVolume(value);
@@ -334,7 +341,7 @@ class MA352Platform {
         }
 
         this.lastKnown.volume = requested;
-        service.updateCharacteristic(Characteristic.Brightness, this.deviceToHomekitVolume(requested));
+        service.updateCharacteristic(Characteristic.RotationSpeed, this.deviceToHomekitVolume(requested));
         this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
       })
       .onGet(() => {
@@ -384,7 +391,7 @@ class MA352Platform {
       const next = Math.min(target, current + VOLUME_RAMP_STEP);
       this.lastKnown.volume = next;
       service.updateCharacteristic(
-        this.api.hap.Characteristic.Brightness,
+        this.api.hap.Characteristic.RotationSpeed,
         this.deviceToHomekitVolume(next),
       );
       if (next < target) {
@@ -534,10 +541,10 @@ class MA352Platform {
       muteService.updateCharacteristic(Characteristic.On, this.lastKnown.mute);
     }
 
-    const volumeService = accessory.getService(Service.Lightbulb);
+    const volumeService = accessory.getService(Service.Fan);
     if (volumeService) {
       volumeService.updateCharacteristic(
-        Characteristic.Brightness,
+        Characteristic.RotationSpeed,
         this.deviceToHomekitVolume(this.lastKnown.volume),
       );
     }

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-06-30
+### Changed
+- Renamed the npm package to the scoped name `@nbeathoven/homebridge-ma352`. The previous unscoped `homebridge-ma352` package is deprecated in favor of this one. Update the plugin through the Homebridge UI or reinstall under the scoped name; Homebridge config is unchanged because the platform is still `MA352Platform`.
+- Exposed volume through a `Fan` service (rotation speed) instead of a `Lightbulb` service. The control keeps the same 0-100 slider but no longer appears as a light, so it is not affected by "turn off all the lights" scenes, automations, or Siri commands.
+- Any previously created `Lightbulb` volume tile is removed automatically on startup during migration.
+
 ## [1.0.10] - 2026-04-12
 ### Changed
 - Changed bridge failover to prefer the configured primary hostname, retry it once after a short delay, and then fail over to fallback hosts.
