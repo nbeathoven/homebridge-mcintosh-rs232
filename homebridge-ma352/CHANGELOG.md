@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-07-01
+### Changed
+- The visible volume slider is now a `Lightbulb` dimmer instead of a `Fan`, per user preference for a dimmer-style icon. It remains a draggable 0-100 control kept in sync with the `TelevisionSpeaker`. Note that HomeKit categorizes a Lightbulb as a light (it appears under "Lights" and responds to light scenes), but the On toggle is a no-op so the volume level is never changed by those scenes. The older `Fan` volume tile is removed automatically on startup.
+
 ## [1.2.1] - 2026-07-01
 ### Fixed
 - Restored a visible volume slider. v1.2.0 exposed volume only through a `TelevisionSpeaker`, which Apple's Home app renders with no slider tile, leaving no on-screen volume control. Volume is now controlled two ways that stay in sync: a `Fan` slider tile (a draggable 0-100 control) and the `TelevisionSpeaker` linked to the TV (iPhone hardware volume buttons and the Control Center Remote).

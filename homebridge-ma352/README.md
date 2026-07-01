@@ -40,7 +40,7 @@ If `fallbackHosts` is set, the plugin will retry those endpoints when the primar
 
 - Power on/off
 - Mute on/off
-- Volume controlled two ways that stay in sync: a `Fan` slider tile (a draggable 0-100 control in the Home app, not categorized as a light) and a `TelevisionSpeaker` linked to the TV (iPhone/iPad hardware volume buttons and the Control Center Remote). HomeKit 0-100 is mapped to the device 0-50 range.
+- Volume controlled two ways that stay in sync: a `Lightbulb` dimmer slider tile (a draggable 0-100 control in the Home app) and a `TelevisionSpeaker` linked to the TV (iPhone/iPad hardware volume buttons and the Control Center Remote). HomeKit 0-100 is mapped to the device 0-50 range. The dimmer appears under "Lights" in the Home app, but its on/off is a no-op so light scenes never change the volume level.
 - Mute available both on the speaker and as a standalone switch for a quick toggle
 - Input selection through a TV-style accessory
 - Cached bridge state refresh via `/state` so HomeKit reads return quickly instead of blocking on multiple live HTTP calls

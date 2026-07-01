@@ -319,15 +319,9 @@ class MA352Platform {
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
-    // Migrate off the deprecated Lightbulb volume tile (it was categorized as a
-    // light). Volume is now controlled two ways that stay in sync: this
-    // TelevisionSpeaker (hardware volume buttons / Control Center Remote) and a
-    // Fan slider tile added by setupVolumeSlider.
-    const staleLightbulb = accessory.getService(Service.Lightbulb);
-    if (staleLightbulb) {
-      accessory.removeService(staleLightbulb);
-    }
-
+    // Volume is controlled two ways that stay in sync: this TelevisionSpeaker
+    // (hardware volume buttons / Control Center Remote) and a Lightbulb dimmer
+    // slider tile added by setupVolumeSlider.
     const speaker = accessory.getService(Service.TelevisionSpeaker) ||
       accessory.addService(Service.TelevisionSpeaker, `${this.deviceName} Volume`);
     this.speakerService = speaker;
@@ -369,12 +363,18 @@ class MA352Platform {
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
-    // A Fan gives a visible, draggable 0-100 slider tile in the Home app
-    // (the TelevisionSpeaker has no slider). Fan is used rather than Lightbulb
-    // so the amp is not categorized as a light. Both controls drive the same
-    // device volume and are kept in sync.
-    const slider = accessory.getService(Service.Fan) ||
-      accessory.addService(Service.Fan, `${this.deviceName} Volume`);
+    // Migrate off the older Fan volume tile (used in 1.1.0-1.2.1).
+    const staleFan = accessory.getService(Service.Fan);
+    if (staleFan) {
+      accessory.removeService(staleFan);
+    }
+
+    // A Lightbulb gives a visible, draggable 0-100 dimmer slider tile in the
+    // Home app (the TelevisionSpeaker has no slider). HomeKit categorizes it as
+    // a light, but the On toggle is a no-op so light scenes never change the
+    // volume level. Both controls drive the same device volume and stay in sync.
+    const slider = accessory.getService(Service.Lightbulb) ||
+      accessory.addService(Service.Lightbulb, `${this.deviceName} Volume`);
     this.volumeSliderService = slider;
 
     slider.getCharacteristic(Characteristic.On)
@@ -383,7 +383,7 @@ class MA352Platform {
       })
       .onGet(() => true);
 
-    slider.getCharacteristic(Characteristic.RotationSpeed)
+    slider.getCharacteristic(Characteristic.Brightness)
       .setProps({ minValue: 0, maxValue: HOMEKIT_VOLUME_MAX, minStep: 1 })
       .onSet(async (value) => {
         await this.setDeviceVolume(value);
@@ -403,7 +403,7 @@ class MA352Platform {
       this.speakerService.updateCharacteristic(Characteristic.Volume, homekitValue);
     }
     if (this.volumeSliderService) {
-      this.volumeSliderService.updateCharacteristic(Characteristic.RotationSpeed, homekitValue);
+      this.volumeSliderService.updateCharacteristic(Characteristic.Brightness, homekitValue);
     }
   }
 
@@ -598,10 +598,10 @@ class MA352Platform {
       speakerService.updateCharacteristic(Characteristic.Mute, this.lastKnown.mute);
     }
 
-    const sliderService = accessory.getService(Service.Fan);
+    const sliderService = accessory.getService(Service.Lightbulb);
     if (sliderService) {
       sliderService.updateCharacteristic(
-        Characteristic.RotationSpeed,
+        Characteristic.Brightness,
         this.deviceToHomekitVolume(this.lastKnown.volume),
       );
     }
