@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-07-01
+### Fixed
+- Restored a visible volume slider. v1.2.0 exposed volume only through a `TelevisionSpeaker`, which Apple's Home app renders with no slider tile, leaving no on-screen volume control. Volume is now controlled two ways that stay in sync: a `Fan` slider tile (a draggable 0-100 control) and the `TelevisionSpeaker` linked to the TV (iPhone hardware volume buttons and the Control Center Remote).
+
 ## [1.2.0] - 2026-07-01
 ### Changed
 - Volume is now exposed through a `TelevisionSpeaker` service linked to the TV accessory instead of a `Fan`. Volume is controlled with the iPhone/iPad hardware volume buttons and the Control Center Remote, and mute is integrated into the speaker (the standalone mute switch remains for a quick toggle). There is no on-tile volume slider — that is a limitation of how Apple's Home app renders `TelevisionSpeaker`. Any previous `Fan` or `Lightbulb` volume tile is removed automatically on startup.

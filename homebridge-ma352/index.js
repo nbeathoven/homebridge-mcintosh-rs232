@@ -38,6 +38,7 @@ class MA352Platform {
     this.statePollTimer = null;
     this.hasAppliedStateSnapshot = false;
     this.speakerService = null;
+    this.volumeSliderService = null;
     this.bridgeAvailable = true;
     this.lastBridgeFailureSummary = null;
 
@@ -216,6 +217,7 @@ class MA352Platform {
     const tvService = this.setupTelevision(mainAccessory);
     this.setupMute(mainAccessory);
     this.setupSpeaker(mainAccessory, tvService);
+    this.setupVolumeSlider(mainAccessory);
   }
 
   getOrCreateAccessory(name, key) {
@@ -317,15 +319,13 @@ class MA352Platform {
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
-    // Migrate off the old Fan/Lightbulb volume tiles. Volume now lives on a
-    // TelevisionSpeaker linked to the TV, controlled by the hardware volume
-    // buttons and the Control Center Remote, so the amp is no longer
-    // misrepresented as a light or a fan.
-    for (const staleType of [Service.Fan, Service.Lightbulb]) {
-      const stale = accessory.getService(staleType);
-      if (stale) {
-        accessory.removeService(stale);
-      }
+    // Migrate off the deprecated Lightbulb volume tile (it was categorized as a
+    // light). Volume is now controlled two ways that stay in sync: this
+    // TelevisionSpeaker (hardware volume buttons / Control Center Remote) and a
+    // Fan slider tile added by setupVolumeSlider.
+    const staleLightbulb = accessory.getService(Service.Lightbulb);
+    if (staleLightbulb) {
+      accessory.removeService(staleLightbulb);
     }
 
     const speaker = accessory.getService(Service.TelevisionSpeaker) ||
@@ -365,6 +365,48 @@ class MA352Platform {
     tvService.addLinkedService(speaker);
   }
 
+  setupVolumeSlider(accessory) {
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    // A Fan gives a visible, draggable 0-100 slider tile in the Home app
+    // (the TelevisionSpeaker has no slider). Fan is used rather than Lightbulb
+    // so the amp is not categorized as a light. Both controls drive the same
+    // device volume and are kept in sync.
+    const slider = accessory.getService(Service.Fan) ||
+      accessory.addService(Service.Fan, `${this.deviceName} Volume`);
+    this.volumeSliderService = slider;
+
+    slider.getCharacteristic(Characteristic.On)
+      .onSet(async () => {
+        // Keep the slider always available; ignore On/Off toggles.
+      })
+      .onGet(() => true);
+
+    slider.getCharacteristic(Characteristic.RotationSpeed)
+      .setProps({ minValue: 0, maxValue: HOMEKIT_VOLUME_MAX, minStep: 1 })
+      .onSet(async (value) => {
+        await this.setDeviceVolume(value);
+      })
+      .onGet(() => {
+        return this.deviceToHomekitVolume(this.getCachedVolume());
+      });
+  }
+
+  pushVolumeToCharacteristics(deviceLevel) {
+    const Characteristic = this.api?.hap?.Characteristic;
+    if (!Characteristic) {
+      return;
+    }
+    const homekitValue = this.deviceToHomekitVolume(deviceLevel);
+    if (this.speakerService) {
+      this.speakerService.updateCharacteristic(Characteristic.Volume, homekitValue);
+    }
+    if (this.volumeSliderService) {
+      this.volumeSliderService.updateCharacteristic(Characteristic.RotationSpeed, homekitValue);
+    }
+  }
+
   async setMute(isOn) {
     this.lastKnown.mute = isOn;
     await this.safePost(isOn ? "/mute/on" : "/mute/off", "mute");
@@ -375,6 +417,7 @@ class MA352Platform {
     const level = this.homekitToDeviceVolume(homekitValue);
     this.lastKnown.volume = level;
     await this.safePost(`/volume/set?level=${level}`, "volume");
+    this.pushVolumeToCharacteristics(level);
     this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
   }
 
@@ -386,12 +429,7 @@ class MA352Platform {
     }
     this.lastKnown.volume = next;
     await this.safePost(`/volume/set?level=${next}`, "volume");
-    if (this.speakerService) {
-      this.speakerService.updateCharacteristic(
-        this.api.hap.Characteristic.Volume,
-        this.deviceToHomekitVolume(next),
-      );
-    }
+    this.pushVolumeToCharacteristics(next);
     this.refreshStateSoon(WRITE_REFRESH_DELAY_MS);
   }
 
@@ -558,6 +596,14 @@ class MA352Platform {
         this.deviceToHomekitVolume(this.lastKnown.volume),
       );
       speakerService.updateCharacteristic(Characteristic.Mute, this.lastKnown.mute);
+    }
+
+    const sliderService = accessory.getService(Service.Fan);
+    if (sliderService) {
+      sliderService.updateCharacteristic(
+        Characteristic.RotationSpeed,
+        this.deviceToHomekitVolume(this.lastKnown.volume),
+      );
     }
   }
 
